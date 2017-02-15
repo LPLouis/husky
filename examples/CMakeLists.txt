@@ -120,3 +120,33 @@ add_executable(AMAT affinity.cpp)
 target_link_libraries(AMAT ${husky})
 target_link_libraries(AMAT ${HUSKY_EXTERNAL_LIB})
 husky_default_properties(AMAT)
+
+# DCD_SVM
+add_executable(DCD_SVM dual_coord_descent.cpp)
+target_link_libraries(DCD_SVM ${husky})
+target_link_libraries(DCD_SVM ${HUSKY_EXTERNAL_LIB})
+husky_default_properties(DCD_SVM)
+
+# BQO_SVM
+add_executable(BQO_SVM bqo_svm.cpp)
+target_link_libraries(BQO_SVM ${husky})
+target_link_libraries(BQO_SVM ${HUSKY_EXTERNAL_LIB})
+husky_default_properties(BQO_SVM)
+
+# PP_SAMPLE 
+add_executable(PP_SAMPLE data_proc_sample.cpp)
+target_link_libraries(PP_SAMPLE ${husky})
+target_link_libraries(PP_SAMPLE ${HUSKY_EXTERNAL_LIB})
+husky_default_properties(PP_SAMPLE)
+
+# PP_FEATURE
+add_executable(PP_FEATURE data_proc_feature.cpp)
+target_link_libraries(PP_FEATURE ${husky})
+target_link_libraries(PP_FEATURE ${HUSKY_EXTERNAL_LIB})
+husky_default_properties(PP_FEATURE)
+
+# TEST
+add_executable(TEST test.cpp)
+target_link_libraries(TEST ${husky})
+target_link_libraries(TEST ${HUSKY_EXTERNAL_LIB})
+husky_default_properties(TEST)
