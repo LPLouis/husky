@@ -316,7 +316,7 @@ void job_runner() {
     DenseVector<double> beta(num_samples, -1.0);
     DenseVector<double> w(num_features, 0);
 
-    int num_test_samples = 0;
+    int num_test_samples = test_set.get_data().size();
     husky::LOG_I << "------------------l2 loss dual coordinate descent with no shringking------------------";
     for (C = 0.01; C < 11.0; C *= 10) {
         auto start = std::chrono::steady_clock::now();
@@ -335,7 +335,6 @@ void job_runner() {
             if (indicator < 0) {
                 error += 1;
             }
-            num_test_samples += 1;
         }
         husky::LOG_I << "Classification accuracy on testing set with C = " + std::to_string(C) + " : " +
                             std::to_string(1.0 - static_cast<double>(error / num_test_samples));
