@@ -145,7 +145,19 @@ target_link_libraries(PP_FEATURE ${husky})
 target_link_libraries(PP_FEATURE ${HUSKY_EXTERNAL_LIB})
 husky_default_properties(PP_FEATURE)
 
-# TEST
+# FGM_DCD
+add_executable(FGM_DCD fgm_dcd.cpp)
+target_link_libraries(FGM_DCD ${husky})
+target_link_libraries(FGM_DCD ${HUSKY_EXTERNAL_LIB})
+husky_default_properties(FGM_DCD)
+
+# DFGM
+add_executable(DFGM dfgm.cpp)
+target_link_libraries(DFGM ${husky})
+target_link_libraries(DFGM ${HUSKY_EXTERNAL_LIB})
+husky_default_properties(DFGM)
+
+# TEST 
 add_executable(TEST test.cpp)
 target_link_libraries(TEST ${husky})
 target_link_libraries(TEST ${HUSKY_EXTERNAL_LIB})

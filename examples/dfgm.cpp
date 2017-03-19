@@ -49,8 +49,6 @@ public:
 class vd_info {
 public:
     husky::ObjList<trObj>* fea_score_dummy_list;
-    husky::PushChannel<std::string, trObj>* push_channel;
-    husky::BroadcastChannel<int, std::string>* broadcast_channel;
 };
 
 template <typename T>
