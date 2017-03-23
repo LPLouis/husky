@@ -56,6 +56,23 @@ using ObjT = husky::lib::ml::LabeledPointHObj<double, double, true>;
 #define INF std::numeric_limits<double>::max()
 #define EPS 1.0e-6
 
+class problem {
+public:
+    double C;
+    int n;          // number of features (appended 1 included)
+    int l;         
+    int max_iter;
+    husky::ObjList<ObjT>* train_set;
+    husky::ObjList<ObjT>* test_set;
+};
+
+class solution {
+public:
+    double dual_obj;
+    DenseVector<double> alpha;
+    DenseVector<double> w;
+};
+
 template <typename T>
 inline void swap(T& a, T& b) {
     T t = a;
@@ -72,14 +89,56 @@ T self_dot_product(const husky::lib::Vector<T, is_sparse>& v) {
     return ret;
 }
 
+void initialize(problem* problem_) {
+    auto& train_set = husky::ObjListStore::create_objlist<ObjT>("train_set");
+    auto& test_set = husky::ObjListStore::create_objlist<ObjT>("test_set");
+    problem_->train_set = &train_set;
+    problem_->test_set = &test_set;
+
+    auto format_str = husky::Context::get_param("format");
+    husky::lib::ml::DataFormat format;
+    if (format_str == "libsvm") {
+        format = husky::lib::ml::kLIBSVMFormat;
+    } else if (format_str == "tsv") {
+        format = husky::lib::ml::kTSVFormat;
+    }
+
+    // load data
+    int n = husky::lib::ml::load_data(husky::Context::get_param("train"), train_set, format);
+    n = std::max(n, husky::lib::ml::load_data(husky::Context::get_param("test"), test_set, format));
+
+    // get model config parameters
+    problem_->C = std::stod(husky::Context::get_param("C"));
+    problem_->max_iter = std::stoi(husky::Context::get_param("max_iter"));
+
+    auto& train_set_data = train_set.get_data();
+
+    for (auto& labeled_point : train_set_data) {
+        labeled_point.x.resize(n + 1);
+        labeled_point.x.set(n, 1);
+    }
+    for (auto& labeled_point : test_set.get_data()) {
+        labeled_point.x.resize(n + 1);
+        labeled_point.x.set(n, 1);
+    }
+
+    n += 1;
+    int l = train_set_data.size();
+    problem_->n = n;
+    problem_->l = l;
+
+    husky::LOG_I << "number of samples: " + std::to_string(l);
+    husky::LOG_I << "number of features: " + std::to_string(n);
+}
+
 template <bool is_sparse = true>
-void dcd_svm_no_shrinking_l2(int num_features, double C, int max_iter, DenseVector<double>& alpha,
-                             const DenseVector<double>& LB, const DenseVector<double>& beta,
-                             husky::ObjList<ObjT>& train_set) {
+solution* dcd_svm_no_shrink_l2(problem* problem_) {
     // Declaration and Initialization
-    const auto& xy_vector = train_set.get_data();
-    int l = xy_vector.size();
-    int n = num_features;
+    int l = problem_->l;
+    int n = problem_->n;
+    double C = problem_->C;
+
+    const auto& labeled_point_vector = problem_->train_set->get_data();
 
     double diag = 0.5 / C;
     double UB = INF;
@@ -87,18 +146,23 @@ void dcd_svm_no_shrinking_l2(int num_features, double C, int max_iter, DenseVect
     double* QD = new double[l];
     int* index = new int[l];
 
-    int iter = 200;
+    int iter = 0;
+    const int max_iter = problem_->max_iter;
+
     int i, k;
 
     double G, PG, PGmax_new;
-    double diff;
+    double diff, obj;
 
+    DenseVector<double> alpha(l, 1.0 / l);
+    DenseVector<double> LB(l, 0.0);
+    DenseVector<double> beta(l, -1.0);
     DenseVector<double> w(n, 0);
 
     for (i = 0; i < l; i++) {
-        QD[i] = self_dot_product(xy_vector[i].x) + diag;
+        QD[i] = self_dot_product(labeled_point_vector[i].x) + diag;
         index[i] = i;
-        w += xy_vector[i].x * xy_vector[i].y * alpha[i];
+        w += labeled_point_vector[i].x * labeled_point_vector[i].y * alpha[i];
     }
 
     iter = 0;
@@ -115,8 +179,8 @@ void dcd_svm_no_shrinking_l2(int num_features, double C, int max_iter, DenseVect
         bool optimal = true;
         for (k = 0; k < l; k++) {
             i = index[k];
-            int yi = xy_vector[i].y;
-            auto& xi = xy_vector[i].x;
+            int yi = labeled_point_vector[i].y;
+            auto& xi = labeled_point_vector[i].x;
 
             G = w.dot(xi) * yi + beta[i] + diag * alpha[i];
             if (EQUAL_VALUE(alpha[i], LB[i])) {
@@ -142,7 +206,7 @@ void dcd_svm_no_shrinking_l2(int num_features, double C, int max_iter, DenseVect
         auto end = std::chrono::steady_clock::now();
 
         // objective
-        double obj = 0;
+        obj = 0;
         for (i = 0; i < n; i++) {
             obj += w[i] * w[i];
         }
@@ -154,16 +218,23 @@ void dcd_svm_no_shrinking_l2(int num_features, double C, int max_iter, DenseVect
 
     delete[] index;
     delete[] QD;
+
+    solution* solution_ = new solution;
+    solution_->dual_obj = obj;
+    solution_->alpha = alpha;
+    solution_->w = w;
+
+    return solution_;
 }
 
 template <bool is_sparse = true>
-void dcd_svm_with_shrinking_l2(int num_features, double C, int max_iter, DenseVector<double>& alpha,
-                               const DenseVector<double>& LB, const DenseVector<double>& beta,
-                               husky::ObjList<ObjT>& train_set) {
+solution* dcd_svm_shrink_l2(problem* problem_) {
     // Declaration and Initialization
-    const auto& xy_vector = train_set.get_data();
-    int l = xy_vector.size();
-    int n = num_features;
+    int l = problem_->l;
+    int n = problem_->n;
+    double C = problem_->C;
+
+    const auto& labeled_point_vector = problem_->train_set->get_data();
 
     double diag = 0.5 / C;
     double UB = INF;
@@ -172,6 +243,7 @@ void dcd_svm_with_shrinking_l2(int num_features, double C, int max_iter, DenseVe
     int* index = new int[l];
 
     int iter = 0;
+    const int max_iter = problem_->max_iter;
 
     double G, PG, PGmax_new, PGmin_new;
     double PGmax_old = INF;
@@ -180,14 +252,17 @@ void dcd_svm_with_shrinking_l2(int num_features, double C, int max_iter, DenseVe
     int i, k;
     int active_size = l;
 
-    double diff;
+    double diff, obj;
 
+    DenseVector<double> alpha(l, 1.0 / l);
+    DenseVector<double> LB(l, 0.0);
+    DenseVector<double> beta(l, -1.0);
     DenseVector<double> w(n, 0);
 
     for (i = 0; i < l; i++) {
-        QD[i] = self_dot_product(xy_vector[i].x) + diag;
+        QD[i] = self_dot_product(labeled_point_vector[i].x) + diag;
         index[i] = i;
-        w += xy_vector[i].x * xy_vector[i].y * alpha[i];
+        w += labeled_point_vector[i].x * labeled_point_vector[i].y * alpha[i];
     }
 
     while (iter < max_iter) {
@@ -203,8 +278,8 @@ void dcd_svm_with_shrinking_l2(int num_features, double C, int max_iter, DenseVe
 
         for (k = 0; k < active_size; k++) {
             i = index[k];
-            int yi = xy_vector[i].y;
-            auto& xi = xy_vector[i].x;
+            int yi = labeled_point_vector[i].y;
+            auto& xi = labeled_point_vector[i].x;
 
             G = (w.dot(xi)) * yi + beta[i] + diag * alpha[i];
 
@@ -257,7 +332,7 @@ void dcd_svm_with_shrinking_l2(int num_features, double C, int max_iter, DenseVe
             PGmin_old = -INF;
         }
         // objective
-        double obj = 0;
+        obj = 0;
         for (i = 0; i < n; i++) {
             obj += w[i] * w[i];
         }
@@ -270,106 +345,50 @@ void dcd_svm_with_shrinking_l2(int num_features, double C, int max_iter, DenseVe
 
     delete[] index;
     delete[] QD;
+
+    solution* solution_ = new solution;
+    solution_->dual_obj = obj;
+    solution_->alpha = alpha;
+    solution_->w = w;
+
+    return solution_;
+}
+
+void evaluate(problem* problem_, solution* solution_) {
+    const auto& alpha = solution_->alpha;
+    const auto& w = solution_->w;
+    const auto& test_set_data = problem_->test_set->get_data();
+
+    double error = 0;
+    double indicator;
+    for (auto& labeled_point : test_set_data) {
+        indicator = w.dot(labeled_point.x);
+        indicator *= labeled_point.y;
+        if (indicator < 0) {
+            error += 1;
+        }
+    }
+    husky::LOG_I << "Classification accuracy on testing set with [C = " + 
+                        std::to_string(problem_->C) + "], " +
+                        "[max_iter = " + std::to_string(problem_->max_iter) + "], " +
+                        "[test set size = " + std::to_string(test_set_data.size()) + "]: " +
+                        std::to_string(1.0 - static_cast<double>(error / test_set_data.size()));  
 }
 
 void job_runner() {
-    auto& train_set = husky::ObjListStore::create_objlist<ObjT>("train_set");
-    auto& test_set = husky::ObjListStore::create_objlist<ObjT>("test_set");
+    problem* problem_ = new problem;
 
-    auto format_str = husky::Context::get_param("format");
-    husky::lib::ml::DataFormat format;
-    if (format_str == "libsvm") {
-        format = husky::lib::ml::kLIBSVMFormat;
-    } else if (format_str == "tsv") {
-        format = husky::lib::ml::kTSVFormat;
-    }
+    initialize(problem_);
 
-    // load data
-    int num_samples = 0;
-    int num_features = husky::lib::ml::load_data(husky::Context::get_param("train"), train_set, format);
-    num_features =
-        std::max(num_features, husky::lib::ml::load_data(husky::Context::get_param("test"), test_set, format));
+    solution* ret1 = dcd_svm_no_shrink_l2(problem_);
+    evaluate(problem_, ret1);
 
-    // get model config parameters
-    double C = std::stod(husky::Context::get_param("C"));
-    int max_iter = std::stoi(husky::Context::get_param("max_iter"));
+    solution* ret2 = dcd_svm_shrink_l2(problem_);
+    evaluate(problem_, ret2);
 
-    // append 1 to the end of every sample
-    for (auto& labeled_point : train_set.get_data()) {
-        labeled_point.x.resize(num_features + 1);
-        labeled_point.x.set(num_features, 1);
-        num_samples += 1;
-    }
-
-    for (auto& labeled_point : test_set.get_data()) {
-        labeled_point.x.resize(num_features + 1);
-        labeled_point.x.set(num_features, 1);
-    }
-
-    num_features += 1;
-    husky::LOG_I << "number of samples: " + std::to_string(num_samples);
-    husky::LOG_I << "number of features: " + std::to_string(num_features);
-
-    // parameter specification
-    DenseVector<double> alpha(num_samples, 1.0 / num_samples);
-    DenseVector<double> lower_bound(num_samples, 0.0);
-    DenseVector<double> beta(num_samples, -1.0);
-    DenseVector<double> w(num_features, 0);
-
-    int num_test_samples = test_set.get_data().size();
-    husky::LOG_I << "------------------l2 loss dual coordinate descent with no shringking------------------";
-    for (C = 0.01; C < 11.0; C *= 10) {
-        auto start = std::chrono::steady_clock::now();
-        dcd_svm_no_shrinking_l2(num_features, C, max_iter, alpha, lower_bound, beta, train_set);
-
-        int i = 0;
-        for (auto& labeled_point : train_set.get_data()) {
-            w += labeled_point.x * alpha[i++] * labeled_point.y;
-        }
-
-        double error = 0;
-        double indicator;
-        for (auto& labeled_point : test_set.get_data()) {
-            indicator = w.dot(labeled_point.x);
-            indicator *= labeled_point.y;
-            if (indicator < 0) {
-                error += 1;
-            }
-        }
-        husky::LOG_I << "Classification accuracy on testing set with C = " + std::to_string(C) + " : " +
-                            std::to_string(1.0 - static_cast<double>(error / num_test_samples));
-        auto end = std::chrono::steady_clock::now();
-        husky::LOG_I << "Time elapsed: " +
-                            std::to_string(
-                                std::chrono::duration_cast<std::chrono::duration<float>>(end - start).count());
-    }
-
-    husky::LOG_I << "------------------l2 loss dual coordinate descent with shringking------------------";
-    for (C = 0.01; C < 11.0; C *= 10) {
-        auto start = std::chrono::steady_clock::now();
-        dcd_svm_with_shrinking_l2(num_features, C, max_iter, alpha, lower_bound, beta, train_set);
-
-        int i = 0;
-        for (auto& labeled_point : train_set.get_data()) {
-            w += labeled_point.x * alpha[i++] * labeled_point.y;
-        }
-
-        double error = 0;
-        double indicator;
-        for (auto& labeled_point : test_set.get_data()) {
-            indicator = w.dot(labeled_point.x);
-            indicator *= labeled_point.y;
-            if (indicator < 0) {
-                error += 1;
-            }
-        }
-        husky::LOG_I << "Classification accuracy on testing set with C = " + std::to_string(C) + " : " +
-                            std::to_string(1.0 - static_cast<double>(error / num_test_samples));
-        auto end = std::chrono::steady_clock::now();
-        husky::LOG_I << "Time elapsed: " +
-                            std::to_string(
-                                std::chrono::duration_cast<std::chrono::duration<float>>(end - start).count());
-    }
+    delete problem_;
+    delete ret1;
+    delete ret2;
 }
 
 void init() {

@@ -122,7 +122,7 @@ target_link_libraries(AMAT ${HUSKY_EXTERNAL_LIB})
 husky_default_properties(AMAT)
 
 # DCD_SVM
-add_executable(DCD_SVM dual_coord_descent.cpp)
+add_executable(DCD_SVM dcd_svm.cpp)
 target_link_libraries(DCD_SVM ${husky})
 target_link_libraries(DCD_SVM ${HUSKY_EXTERNAL_LIB})
 husky_default_properties(DCD_SVM)

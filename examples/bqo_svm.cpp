@@ -58,6 +58,29 @@ using ObjT = husky::lib::ml::LabeledPointHObj<double, double, true>;
 #define INF std::numeric_limits<double>::max()
 #define EPS 1.0e-6
 
+class problem {
+public:
+    double C;
+    int n;          // global number of features (appended 1 included)
+    int N;          // global number of samples
+    int l;
+    int W;          // number of workers
+    int tid;        // global tid of the worker
+    int idx_l;      // index_low
+    int idx_h;      // index_high
+    int max_iter;
+    int max_inn_iter;
+    husky::ObjList<ObjT>* train_set;
+    husky::ObjList<ObjT>* test_set;
+};
+
+class solution {
+public:
+    double duality_gap;
+    DenseVector<double> w;
+    DenseVector<double> alpha;
+};
+
 template <typename T>
 inline void swap(T& a, T& b) {
     T t = a;
@@ -74,12 +97,10 @@ T self_dot_product(const husky::lib::Vector<T, is_sparse>& v) {
     return res;
 }
 
-void get_local_worker_info(int& num_workers, int& tid, int& n, double& C, int& N, int& l, int& index_low,
-                           int& index_high, husky::ObjList<ObjT>& train_set, husky::ObjList<ObjT>& test_set,
-                           int& max_iter, int& max_inn_iter) {
+void initialize(problem* problem_) {
     // worker info
-    num_workers = husky::Context::get_num_workers();
-    tid = husky::Context::get_global_tid();
+    int W = problem_->W = husky::Context::get_num_workers();
+    int tid = problem_->tid = husky::Context::get_global_tid();
 
     std::string format_str = husky::Context::get_param("format");
     husky::lib::ml::DataFormat format;
@@ -88,85 +109,100 @@ void get_local_worker_info(int& num_workers, int& tid, int& n, double& C, int& N
     } else if (format_str == "tsv") {
         format = husky::lib::ml::kTSVFormat;
     }
+    auto& train_set = husky::ObjListStore::create_objlist<ObjT>("train_set");
+    auto& test_set = husky::ObjListStore::create_objlist<ObjT>("test_set");
+    problem_->train_set = &train_set;
+    problem_->test_set = &test_set;
 
     // load data
+    int n;
     n = husky::lib::ml::load_data(husky::Context::get_param("train"), train_set, format);
     n = std::max(n, husky::lib::ml::load_data(husky::Context::get_param("test"), test_set, format));
+    // append 1 to the end of every sample
+    for (auto& labeled_point : train_set.get_data()) {
+        labeled_point.x.resize(n + 1);
+        labeled_point.x.set(n, 1);
+    }
+    for (auto& labeled_point : test_set.get_data()) {
+        labeled_point.x.resize(n + 1);
+        labeled_point.x.set(n, 1);
+    }
+    n += 1;
+    problem_->n = n;
 
     // get model config parameters
-    C = std::stod(husky::Context::get_param("C"));
-    max_iter = std::stoi(husky::Context::get_param("max_iter"));
-    max_inn_iter = std::stoi(husky::Context::get_param("max_inn_iter"));
+    problem_->C = std::stod(husky::Context::get_param("C"));
+    problem_->max_iter = std::stoi(husky::Context::get_param("max_iter"));
+    problem_->max_inn_iter = std::stoi(husky::Context::get_param("max_inn_iter"));
 
     // initialize parameters
     husky::lib::ml::ParameterBucket<double> param_list(n + 1);  // scalar b and vector w
 
     // get the number of global records
-    Aggregator<std::vector<int>> vec_local_samples(
-        std::vector<int>(num_workers, 0),
+    Aggregator<std::vector<int>> local_samples_agg(
+        std::vector<int>(W, 0),
         [](std::vector<int>& a, const std::vector<int>& b) {
             for (int i = 0; i < a.size(); i++)
                 a[i] += b[i];
         },
-        [num_workers](std::vector<int>& v) { v = std::move(std::vector<int>(num_workers, 0)); });
+        [W](std::vector<int>& v) { v = std::move(std::vector<int>(W, 0)); });
 
-    vec_local_samples.update_any([&train_set, tid](std::vector<int>& v) { v[tid] = train_set.get_size(); });
+    local_samples_agg.update_any([&train_set, tid](std::vector<int>& v) { v[tid] = train_set.get_size(); });
     AggregatorFactory::sync();
-    vec_local_samples.inactivate();
+    local_samples_agg.inactivate();
 
-    auto& num_samples = vec_local_samples.get_value();
-    N = 0;
-    std::vector<int> sample_distrib_info(num_workers, 0);
+    auto& num_samples = local_samples_agg.get_value();
+    int N = 0;
+    std::vector<int> sample_distribution_agg(W, 0);
     for (int i = 0; i < num_samples.size(); i++) {
         N += num_samples[i];
-        sample_distrib_info[i] = N;
+        sample_distribution_agg[i] = N;
     }
 
+    int index_low, index_high;
     // A worker holds samples [low, high)
     if (tid == 0) {
         index_low = 0;
     } else {
-        index_low = sample_distrib_info[tid - 1];
+        index_low = sample_distribution_agg[tid - 1];
     }
-    if (tid == (num_workers - 1)) {
+    if (tid == (W - 1)) {
         index_high = N;
     } else {
-        index_high = sample_distrib_info[tid];
+        index_high = sample_distribution_agg[tid];
     }
-    l = index_high - index_low;
+    int l = index_high - index_low;
+
+    problem_->N = N;
+    problem_->l = l;
+    problem_->idx_l = index_low;
+    problem_->idx_h = index_high;
 
     if (tid == 0) {
         husky::LOG_I << "Number of samples: " + std::to_string(N);
-        husky::LOG_I << "Number of features: " + std::to_string(n + 1);
+        husky::LOG_I << "Number of features: " + std::to_string(n);
     }
     return;
 }
 
-void bqo_svm() {
+solution* bqo_svm(problem* problem_) {
     int i, k;
 
-    auto& train_set = husky::ObjListStore::create_objlist<ObjT>("train_set");
-    auto& test_set = husky::ObjListStore::create_objlist<ObjT>("test_set");
+    const auto& train_set = problem_->train_set;
+    const auto& test_set = problem_->test_set;
+    const auto& train_set_data = train_set->get_data();
+    const auto& test_set_data = test_set->get_data();
 
-    // get worker info
-    double C;
-    int num_workers, tid, n, N, l, index_low, index_high, max_iter, max_inn_iter;
-    get_local_worker_info(num_workers, tid, n, C, N, l, index_low, index_high, train_set, test_set, max_iter,
-                          max_inn_iter);
-
-    auto& train_set_data = train_set.get_data();
-    auto& test_set_data = test_set.get_data();
-
-    // append 1 to the end of every sample
-    for (auto& labeled_point : train_set_data) {
-        labeled_point.x.resize(n + 1);
-        labeled_point.x.set(n, 1);
-    }
-    for (auto& labeled_point : test_set_data) {
-        labeled_point.x.resize(n + 1);
-        labeled_point.x.set(n, 1);
-    }
-    n += 1;
+    const double C = problem_->C;
+    const int W = problem_->W;
+    const int tid = problem_->tid;
+    const int n = problem_->n;
+    const int l = problem_->l;
+    const int N = problem_->N;
+    const int index_low = problem_->idx_l;
+    const int index_high = problem_->idx_h;
+    const int max_iter = problem_->max_iter;
+    const int max_inn_iter = problem_->max_inn_iter;
 
     int active_size, iter_out, inn_iter;
     double diff, primal, gap, opt_eta, grad_alpha_delta_alpha, a_Q_a;
@@ -179,28 +215,21 @@ void bqo_svm() {
     double pdw = 0;
     double initial_gap = C * N;
 
-    double* QD = new double[l];
-    int* index = new int[l];
-
-    for (int i = 0; i < l; i++) {
-        QD[i] = self_dot_product(train_set_data[i].x) + diag;
-        index[i] = i;
-    }
-
-    // for now assume we initialize alpha and weight to 0
     DenseVector<double> alpha(l, 0.0);
     DenseVector<double> orig_alpha(l);
     DenseVector<double> delta_alpha(l);
     DenseVector<double> lower_bound(l, 0.0);
     DenseVector<double> grad_alpha(l, -1.0);
-    DenseVector<double> weight(n, 0.0);
-    DenseVector<double> best_weight(n, 0.0);
-    DenseVector<double> orig_weight(n);
+    DenseVector<double> w(n, 0.0);
+    DenseVector<double> best_w(n, 0.0);
+    DenseVector<double> orig_w(n);
 
-    DenseVector<double> orig_param_server_weight(n, 0.0);
-    husky::lib::ml::ParameterBucket<double> param_server_weight;
-    param_server_weight.init(n, 0.0);
+    DenseVector<double> orig_param_server_w(n, 0.0);
+    husky::lib::ml::ParameterBucket<double> param_server_w;
+    param_server_w.init(n, 0.0);
 
+    Aggregator<double> loss(0.0, [](double& a, const double& b) { a += b; });
+    loss.to_reset_each_iter();
     Aggregator<double> alpha_delta_alpha(0.0, [](double& a, const double& b) { a += b; });
     alpha_delta_alpha.to_reset_each_iter();
     Aggregator<double> et_delta_alpha(0.0, [](double& a, const double& b) { a += b; });
@@ -210,12 +239,57 @@ void bqo_svm() {
     Aggregator<double> eta(INF, [](double& a, const double& b) { a = std::min(a, b); }, [](double& a) { a = INF; });
     eta.to_reset_each_iter();
 
+    double* QD = new double[l];
+    int* index = new int[l];
+
+    // cache diagonal Q_ii and index for shrinking
+    for (i = 0; i < l; i++) {
+        QD[i] = self_dot_product(train_set_data[i].x) + diag;
+        index[i] = i;
+    }
+
+    /*******************************************************************/
+    // comment the following if alpha is 0
+    // At first I wonder why don't we set old_primal to 0 here
+    // But then I found out that if i did so, the primal value will always be larger than old_primal
+    // and as a result best_w is set to w and will be return, which leads to the classifier giving 0
+    // as output, which sits right on the decision boundary.
+    // this problem is solved if we set alpha to be non-zero though
+    for (i = 0; i < l; i++) {
+        w += alpha[i] * train_set_data[i].y * train_set_data[i].x;
+    }
+    for (i = 0; i < n; i++) {
+        param_server_w.update(i, w[i]);
+    }
+    AggregatorFactory::sync();
+    w = param_server_w.get_all_param();
+    double reg = self_dot_product(w);
+    i = 0;
+    Aggregator<double> et_alpha_agg(0.0, [](double& a, const double& b) { a += b; });
+    et_alpha_agg.to_reset_each_iter();
+    for (auto& labeled_point : train_set_data) {
+        diff = 1 - labeled_point.y * w.dot(labeled_point.x);
+        if (diff > 0.0) {
+            loss.update(C * diff * diff);
+        }
+        // this is a minomer, actually this calculate both aTa and eTa
+        et_alpha_agg.update(alpha[i] * (alpha[i] / C - 2));
+    }
+    AggregatorFactory::sync();
+    old_primal += 0.5 * reg + loss.get_value();
+    dual += reg + et_alpha_agg.get_value();
+    dual /= 2;
+    best_w = w;
+    // set param_server_w back to 0.0
+    param_server_w.init(n, 0.0);
+    /*******************************************************************/
+
     auto start = std::chrono::steady_clock::now();
 
     iter_out = 0;
     while (iter_out < max_iter) {
         // get parameters for local svm solver
-        orig_weight = weight;
+        orig_w = w;
         orig_alpha = alpha;
 
         // run local svm solver to get local delta alpha
@@ -236,7 +310,7 @@ void bqo_svm() {
                 int yi = train_set_data[i].y;
                 auto& xi = train_set_data[i].x;
 
-                G = (weight.dot(xi)) * yi + -1 + diag * alpha[i];
+                G = (w.dot(xi)) * yi + -1 + diag * alpha[i];
 
                 PG = 0;
                 if (EQUAL_VALUE(alpha[i], 0)) {
@@ -261,7 +335,7 @@ void bqo_svm() {
                     double alpha_old = alpha[i];
                     alpha[i] = std::min(std::max(alpha[i] - G / QD[i], 0.0), INF);
                     diff = yi * (alpha[i] - alpha_old);
-                    weight += xi * diff;
+                    w += xi * diff;
                 }
             }
 
@@ -298,70 +372,75 @@ void bqo_svm() {
             }
         }
         for (i = 0; i < n; i++) {
-            param_server_weight.update(i, weight[i] - orig_weight[i] - orig_param_server_weight[i] / num_workers);
+            param_server_w.update(i, w[i] - orig_w[i] - orig_param_server_w[i] / W);
         }
         AggregatorFactory::sync();
 
-        orig_param_server_weight = param_server_weight.get_all_param();
+        orig_param_server_w = param_server_w.get_all_param();
         // get step size
-        grad_alpha_delta_alpha = orig_weight.dot(orig_param_server_weight) + 1.0 / C * alpha_delta_alpha.get_value() -
+        grad_alpha_delta_alpha = orig_w.dot(orig_param_server_w) + 1.0 / C * alpha_delta_alpha.get_value() -
                                  et_delta_alpha.get_value();
-        a_Q_a = orig_param_server_weight.dot(orig_param_server_weight) + 1.0 / C * delta_alpha_square.get_value();
+        a_Q_a = orig_param_server_w.dot(orig_param_server_w) + 1.0 / C * delta_alpha_square.get_value();
         if (grad_alpha_delta_alpha > 0) {
-            weight = best_weight;
+            w = best_w;
             break;
         }
         opt_eta = -1 * grad_alpha_delta_alpha / a_Q_a;
         opt_eta = std::min(opt_eta, eta.get_value());
 
-        // update global alpha and global weight
+        // update global alpha and global w
         for (i = 0; i < l; i++) {
             alpha[i] += opt_eta * delta_alpha[i];
         }
         alpha = orig_alpha + opt_eta * delta_alpha;
-        weight = orig_weight + opt_eta * orig_param_server_weight;
+        w = orig_w + opt_eta * orig_param_server_w;
 
         // f(w) + f(a) will cancel out the 0.5\alphaQ\alpha term (old value)
         dual += opt_eta * (0.5 * opt_eta * a_Q_a + grad_alpha_delta_alpha);
-        pdw += 0.5 * opt_eta * (2 * orig_weight.dot(orig_param_server_weight) +
-                                opt_eta * orig_param_server_weight.dot(orig_param_server_weight));
+        pdw += 0.5 * opt_eta * (2 * orig_w.dot(orig_param_server_w) +
+                                opt_eta * orig_param_server_w.dot(orig_param_server_w));
 
-        Aggregator<double> loss(0.0, [](double& a, const double& b) { a += b; });
-        loss.to_reset_each_iter();
         for (auto& labeled_point : train_set_data) {
-            diff = 1 - labeled_point.y * weight.dot(labeled_point.x);
+            diff = 1 - labeled_point.y * w.dot(labeled_point.x);
             loss.update(C * diff * diff);
         }
         AggregatorFactory::sync();
 
         primal = loss.get_value() + pdw;
-
         if (primal < old_primal) {
             old_primal = primal;
-            best_weight = weight;
+            best_w = w;
         }
 
         gap = (primal + dual) / initial_gap;
 
-        /*
-        if (tid == 0) {
-            husky::LOG_I << "[Iter " + std::to_string(iter_out) + "]: primal: " + std::to_string(primal) + ", dual:
-        " + std::to_string(dual) + ", gap: " + std::to_string(gap);
-        }
-        */
-
         if (gap < EPS) {
-            weight = best_weight;
+            w = best_w;
             break;
         }
         iter_out++;
     }
 
+    delete[] QD;
+    delete[] index;
+
+    solution* solution_ = new solution;
+    solution_->duality_gap = gap;
+    solution_->alpha = alpha;
+    solution_->w = w;
+
+    return solution_;
+}
+
+void evaluate(problem* problem_, solution* solution_) {
+    const auto& test_set = problem_->test_set;
+    const auto& w = solution_->w;
+
     Aggregator<int> error_agg(0, [](int& a, const int& b) { a += b; });
     Aggregator<int> num_test_agg(0, [](int& a, const int& b) { a += b; });
     auto& ac = AggregatorFactory::get_channel();
-    list_execute(test_set, {}, {&ac}, [&](ObjT& labeled_point) {
-        double indicator = weight.dot(labeled_point.x);
+    list_execute(*test_set, {}, {&ac}, [&](ObjT& labeled_point) {
+        double indicator = w.dot(labeled_point.x);
         indicator *= labeled_point.y;
         if (indicator < 0) {
             error_agg.update(1);
@@ -369,22 +448,32 @@ void bqo_svm() {
         num_test_agg.update(1);
     });
 
-    if (tid == 0) {
-        husky::LOG_I << "Classification accuracy on testing set with C = " + std::to_string(C) + " : " +
-                            std::to_string(1.0 - static_cast<double>(error_agg.get_value()) / num_test_agg.get_value());
-        auto end = std::chrono::steady_clock::now();
-        husky::LOG_I << "Time elapsed: " +
-                            std::to_string(
-                                std::chrono::duration_cast<std::chrono::duration<float>>(end - start).count());
+    if (problem_->tid == 0) {
+        husky::LOG_I << "Classification accuracy on testing set with [C = " + 
+                        std::to_string(problem_->C) + "], " +
+                        "[max_iter = " + std::to_string(problem_->max_iter) + "], " +
+                        "[max_inn_iter = " + std::to_string(problem_->max_inn_iter) + "], " +
+                        "[test set size = " + std::to_string(num_test_agg.get_value()) + "]: " +
+                        std::to_string(1.0 - static_cast<double>(error_agg.get_value()) / num_test_agg.get_value());  
     }
+}
 
-    delete[] QD;
-    delete[] index;
+void job_runner() {
+    problem* problem_ = new problem;
+
+    initialize(problem_);
+
+    solution* solution_ = bqo_svm(problem_);
+
+    evaluate(problem_, solution_);
+
+    delete problem_;
+    delete solution_;
 }
 
 void init() {
     if (husky::Context::get_param("is_sparse") == "true") {
-        bqo_svm();
+        job_runner();
     } else {
         husky::LOG_I << "Dense data format is not supported";
     }

@@ -1,4 +1,6 @@
 /***
+    Note in the actual file, feature_id, sample_id, fea and sample all starts from 1
+    whereas when loaded into objlist, they should all start from 0
     data format: kLIBSVMFormat
     pp_sample: sample_id label <fea>:<fea_val>
     pp_feature: feature_id <sample>:<sample_val>
