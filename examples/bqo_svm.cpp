@@ -274,12 +274,15 @@ solution* bqo_svm(problem* problem_) {
         }
         // this is a minomer, actually this calculate both aTa and eTa
         et_alpha_agg.update(alpha[i] * (alpha[i] / C - 2));
+        i++;
     }
     AggregatorFactory::sync();
     old_primal += 0.5 * reg + loss.get_value();
     dual += reg + et_alpha_agg.get_value();
     dual /= 2;
     best_w = w;
+    pdw += 0.5 * reg;
+    initial_gap = 0.5 * reg + loss.get_value() + dual;
     // set param_server_w back to 0.0
     param_server_w.init(n, 0.0);
     /*******************************************************************/
@@ -402,7 +405,9 @@ solution* bqo_svm(problem* problem_) {
 
         for (auto& labeled_point : train_set_data) {
             diff = 1 - labeled_point.y * w.dot(labeled_point.x);
-            loss.update(C * diff * diff);
+            if (diff < 0) {
+                loss.update(C * diff * diff);
+            }
         }
         AggregatorFactory::sync();
 
@@ -413,6 +418,12 @@ solution* bqo_svm(problem* problem_) {
         }
 
         gap = (primal + dual) / initial_gap;
+
+        if (tid == 0) {
+            husky::LOG_I << "primal: " + std::to_string(primal);
+            husky::LOG_I << "dual: " + std::to_string(dual);
+            husky::LOG_I << "duality_gap: " + std::to_string(gap);
+        }
 
         if (gap < EPS) {
             w = best_w;
@@ -442,7 +453,7 @@ void evaluate(problem* problem_, solution* solution_) {
     list_execute(*test_set, {}, {&ac}, [&](ObjT& labeled_point) {
         double indicator = w.dot(labeled_point.x);
         indicator *= labeled_point.y;
-        if (indicator < 0) {
+        if (indicator <= 0) {
             error_agg.update(1);
         }
         num_test_agg.update(1);

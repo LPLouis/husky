@@ -498,7 +498,7 @@ SparseVector<double> find_most_violated(data* data_, model* model_, solu* solu_ 
     }
 
     for (i = 0; i < data_->n; i++) {
-        fea_score.push_back(std::make_pair(i, w[i]));
+        fea_score.push_back(std::make_pair(i, w[i] * w[i]));
     }
 
     std::sort(fea_score.begin(), fea_score.end(), [](auto& left, auto& right) {
