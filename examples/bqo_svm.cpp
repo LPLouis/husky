@@ -204,40 +204,46 @@ solution* bqo_svm(problem* problem_) {
     const int max_iter = problem_->max_iter;
     const int max_inn_iter = problem_->max_inn_iter;
 
-    int active_size, iter_out, inn_iter;
-    double diff, primal, gap, opt_eta, grad_alpha_delta_alpha, a_Q_a;
-    double G, PG, PGmax_new, PGmin_new;
-    double PGmax_old = INF;
-    double PGmin_old = -INF;
+    int iter_out, inn_iter;
+
     double diag = 0.5 / C;
-    double old_primal = INF;
-    double dual = 0;
-    double pdw = 0;
-    double initial_gap = C * N;
+    double old_primal, primal, obj, grad_alpha_inc;
+    double loss, reg = 0;
+    double init_primal = C * N;
+    double sum_alpha_inc;
+    double w_inc_square;
+    double w_dot_w_inc;
+    double alpha_inc_square;
+    double alpha_inc_dot_alpha;
+    double max_step;
+    double eta;
+
+    double G;
+    double gap;
+    // projected gradient
+    double PG;
 
     DenseVector<double> alpha(l, 0.0);
-    DenseVector<double> orig_alpha(l);
-    DenseVector<double> delta_alpha(l);
-    DenseVector<double> lower_bound(l, 0.0);
-    DenseVector<double> grad_alpha(l, -1.0);
+    DenseVector<double> alpha_orig(l);
+    DenseVector<double> alpha_inc(l);
     DenseVector<double> w(n, 0.0);
+    DenseVector<double> w_orig(n, 0.0);
+    DenseVector<double> delta_w(n, 0.0);
     DenseVector<double> best_w(n, 0.0);
-    DenseVector<double> orig_w(n);
 
-    DenseVector<double> orig_param_server_w(n, 0.0);
     husky::lib::ml::ParameterBucket<double> param_server_w;
     param_server_w.init(n, 0.0);
 
-    Aggregator<double> loss(0.0, [](double& a, const double& b) { a += b; });
-    loss.to_reset_each_iter();
-    Aggregator<double> alpha_delta_alpha(0.0, [](double& a, const double& b) { a += b; });
-    alpha_delta_alpha.to_reset_each_iter();
-    Aggregator<double> et_delta_alpha(0.0, [](double& a, const double& b) { a += b; });
-    et_delta_alpha.to_reset_each_iter();
-    Aggregator<double> delta_alpha_square(0.0, [](double& a, const double& b) { a += b; });
-    delta_alpha_square.to_reset_each_iter();
-    Aggregator<double> eta(INF, [](double& a, const double& b) { a = std::min(a, b); }, [](double& a) { a = INF; });
-    eta.to_reset_each_iter();
+    Aggregator<double> loss_agg(0.0, [](double& a, const double& b) { a += b; });
+    loss_agg.to_reset_each_iter();
+    Aggregator<double> sum_alpha_inc_agg(0.0, [](double& a, const double& b) { a += b; });
+    sum_alpha_inc_agg.to_reset_each_iter();
+    Aggregator<double> alpha_inc_dot_alpha_agg(0.0, [](double& a, const double& b) { a += b; });
+    alpha_inc_dot_alpha_agg.to_reset_each_iter();
+    Aggregator<double> alpha_inc_square_agg(0.0, [](double& a, const double& b) { a += b; });
+    alpha_inc_square_agg.to_reset_each_iter();
+    Aggregator<double> eta_agg(INF, [](double& a, const double& b) { a = std::min(a, b); }, [](double& a) { a = INF; });
+    eta_agg.to_reset_each_iter();
 
     double* QD = new double[l];
     int* index = new int[l];
@@ -247,6 +253,9 @@ solution* bqo_svm(problem* problem_) {
         QD[i] = self_dot_product(train_set_data[i].x) + diag;
         index[i] = i;
     }
+
+    old_primal = INF;
+    obj = 0;
 
     /*******************************************************************/
     // comment the following if alpha is 0
@@ -258,170 +267,156 @@ solution* bqo_svm(problem* problem_) {
     for (i = 0; i < l; i++) {
         w += alpha[i] * train_set_data[i].y * train_set_data[i].x;
     }
+    param_server_w.init(n, 0.0);
     for (i = 0; i < n; i++) {
         param_server_w.update(i, w[i]);
     }
     AggregatorFactory::sync();
     w = param_server_w.get_all_param();
-    double reg = self_dot_product(w);
+    // set parameter server back to 0.0
+    reg = self_dot_product(w);
+    reg *= 0.5;
     i = 0;
     Aggregator<double> et_alpha_agg(0.0, [](double& a, const double& b) { a += b; });
     et_alpha_agg.to_reset_each_iter();
     for (auto& labeled_point : train_set_data) {
-        diff = 1 - labeled_point.y * w.dot(labeled_point.x);
-        if (diff > 0.0) {
-            loss.update(C * diff * diff);
+        loss = 1 - labeled_point.y * w.dot(labeled_point.x);
+        if (loss > 0) {
+            // l2 loss
+            loss_agg.update(C * loss * loss);
         }
         // this is a minomer, actually this calculate both aTa and eTa
-        et_alpha_agg.update(alpha[i] * (alpha[i] / C - 2));
+        et_alpha_agg.update(alpha[i] * (alpha[i] * diag - 2));
         i++;
     }
     AggregatorFactory::sync();
-    old_primal += 0.5 * reg + loss.get_value();
-    dual += reg + et_alpha_agg.get_value();
-    dual /= 2;
-    best_w = w;
-    pdw += 0.5 * reg;
-    initial_gap = 0.5 * reg + loss.get_value() + dual;
-    // set param_server_w back to 0.0
-    param_server_w.init(n, 0.0);
+    old_primal += reg + loss_agg.get_value();
+    obj += 0.5 * et_alpha_agg.get_value() + reg;
     /*******************************************************************/
-
-    auto start = std::chrono::steady_clock::now();
 
     iter_out = 0;
     while (iter_out < max_iter) {
         // get parameters for local svm solver
-        orig_w = w;
-        orig_alpha = alpha;
+        max_step = INF;
+        w_orig = w;
+        alpha_orig = alpha;
+        sum_alpha_inc = 0;
+        w_inc_square = 0;
+        w_dot_w_inc = 0;
+        alpha_inc_square = 0;
+        alpha_inc_dot_alpha = 0;
+
+        for (i = 0; i < l; i++) {
+            int j = i + std::rand() % (l - i);
+            swap(index[i], index[j]);
+        }
 
         // run local svm solver to get local delta alpha
         inn_iter = 0;
-        active_size = l;
-
         while (inn_iter < max_inn_iter) {
-            PGmax_new = 0;
-            PGmin_new = 0;
 
-            for (i = 0; i < active_size; i++) {
-                int j = i + std::rand() % (active_size - i);
-                swap(index[i], index[j]);
-            }
-
-            for (k = 0; k < active_size; k++) {
+            for (k = 0; k < l; k++) {
                 i = index[k];
-                int yi = train_set_data[i].y;
+                double yi = train_set_data[i].y;
                 auto& xi = train_set_data[i].x;
 
-                G = (w.dot(xi)) * yi + -1 + diag * alpha[i];
+                G = (w.dot(xi)) * yi - 1 + diag * alpha[i];
 
                 PG = 0;
-                if (EQUAL_VALUE(alpha[i], 0)) {
-                    if (G > PGmax_old) {
-                        active_size--;
-                        swap(index[k], index[active_size]);
-                        k--;
-                        continue;
-                    } else if (G < 0) {
+                if (alpha[i] == 0) {
+                    if (G < 0) {
                         PG = G;
-                        PGmin_new = std::min(PGmin_new, PG);
+                    }
+                } else if (alpha[i] == INF){
+                    if (G > 0) {
+                        PG = G;
                     }
                 } else {
                     PG = G;
-                    PGmax_new = std::max(PGmax_new, PG);
-                    PGmin_new = std::min(PGmin_new, PG);
                 }
 
-                if (EQUAL_VALUE(PG, 0.0)) {
-                    continue;
-                } else {
+                if (fabs(PG) > 1e-12) {
                     double alpha_old = alpha[i];
                     alpha[i] = std::min(std::max(alpha[i] - G / QD[i], 0.0), INF);
-                    diff = yi * (alpha[i] - alpha_old);
-                    w += xi * diff;
+                    loss = yi * (alpha[i] - alpha_old);
+                    w += xi * loss;
                 }
             }
-
             inn_iter++;
-            if (PGmax_new - PGmin_new <= EPS) {
-                if (active_size == l) {
-                    break;
-                } else {
-                    active_size = l;
-                    PGmax_old = INF;
-                    PGmin_old = -INF;
-                    continue;
-                }
-            }
-            PGmax_old = PGmax_new;
-            PGmin_old = PGmin_new;
-            if (PGmax_old == 0) {
-                PGmax_old = INF;
-            }
-            if (PGmin_old == 0) {
-                PGmin_old = -INF;
-            }
         }
 
-        delta_alpha = alpha - orig_alpha;
+        alpha_inc = alpha - alpha_orig;
         for (i = 0; i < l; i++) {
-            et_delta_alpha.update(delta_alpha[i]);
-            delta_alpha_square.update(delta_alpha[i] * delta_alpha[i]);
-            alpha_delta_alpha.update(delta_alpha[i] * orig_alpha[i]);
-            if (delta_alpha[i] < 0) {
-                eta.update(-1 * orig_alpha[i] / delta_alpha[i]);
-            } else {
-                eta.update(INF);
-            }
+            alpha_inc[i] = alpha[i] - alpha_orig[i];
+            sum_alpha_inc += alpha_inc[i];
+            alpha_inc_square += alpha_inc[i] * alpha_inc[i] * diag;
+            alpha_inc_dot_alpha += alpha_inc[i] * alpha_orig[i] * diag;
+            if (alpha_inc[i] > 0)
+                max_step = std::min(max_step, INF);
+            else if (alpha_inc[i] < 0)
+                max_step = std::min(max_step, - alpha_orig[i] / alpha_inc[i]);
         }
+        sum_alpha_inc_agg.update(sum_alpha_inc);
+        alpha_inc_square_agg.update(alpha_inc_square);
+        alpha_inc_dot_alpha_agg.update(alpha_inc_dot_alpha);
+        eta_agg.update(max_step);
+
+        param_server_w.init(n, 0.0);
         for (i = 0; i < n; i++) {
-            param_server_w.update(i, w[i] - orig_w[i] - orig_param_server_w[i] / W);
+            param_server_w.update(i, w[i] - w_orig[i]);
         }
         AggregatorFactory::sync();
 
-        orig_param_server_w = param_server_w.get_all_param();
+        sum_alpha_inc = sum_alpha_inc_agg.get_value();
+        alpha_inc_square = alpha_inc_square_agg.get_value();
+        alpha_inc_dot_alpha = alpha_inc_dot_alpha_agg.get_value();
+        max_step = eta_agg.get_value();
+        delta_w = param_server_w.get_all_param();
+
+        w_inc_square += self_dot_product(delta_w);
+        w_dot_w_inc += w_orig.dot(delta_w);
+        param_server_w.init(n, 0.0);
         // get step size
-        grad_alpha_delta_alpha = orig_w.dot(orig_param_server_w) + 1.0 / C * alpha_delta_alpha.get_value() -
-                                 et_delta_alpha.get_value();
-        a_Q_a = orig_param_server_w.dot(orig_param_server_w) + 1.0 / C * delta_alpha_square.get_value();
-        if (grad_alpha_delta_alpha > 0) {
+        grad_alpha_inc = w_dot_w_inc + alpha_inc_dot_alpha - sum_alpha_inc;
+        if (grad_alpha_inc >= 0) {
             w = best_w;
             break;
         }
-        opt_eta = -1 * grad_alpha_delta_alpha / a_Q_a;
-        opt_eta = std::min(opt_eta, eta.get_value());
 
-        // update global alpha and global w
-        for (i = 0; i < l; i++) {
-            alpha[i] += opt_eta * delta_alpha[i];
-        }
-        alpha = orig_alpha + opt_eta * delta_alpha;
-        w = orig_w + opt_eta * orig_param_server_w;
+        double aQa = alpha_inc_square + w_inc_square;
+        eta = std::min(max_step, -grad_alpha_inc /aQa);
+
+        alpha = alpha_orig + eta * alpha_inc;
+        w = w_orig + eta * delta_w;
 
         // f(w) + f(a) will cancel out the 0.5\alphaQ\alpha term (old value)
-        dual += opt_eta * (0.5 * opt_eta * a_Q_a + grad_alpha_delta_alpha);
-        pdw += 0.5 * opt_eta * (2 * orig_w.dot(orig_param_server_w) +
-                                opt_eta * orig_param_server_w.dot(orig_param_server_w));
+        obj += eta * (0.5 * eta * aQa + grad_alpha_inc);
+
+        reg += eta * (w_dot_w_inc + 0.5 * eta * w_inc_square);
+
+        primal = 0;
 
         for (auto& labeled_point : train_set_data) {
-            diff = 1 - labeled_point.y * w.dot(labeled_point.x);
-            if (diff < 0) {
-                loss.update(C * diff * diff);
+            loss = 1 - labeled_point.y * w.dot(labeled_point.x);
+            if (loss > 0) {
+                loss_agg.update(C * loss * loss);
             }
         }
         AggregatorFactory::sync();
 
-        primal = loss.get_value() + pdw;
+        primal += reg + loss_agg.get_value();
+
+
         if (primal < old_primal) {
             old_primal = primal;
             best_w = w;
         }
 
-        gap = (primal + dual) / initial_gap;
+        gap = (primal + obj) / init_primal;
 
         if (tid == 0) {
             husky::LOG_I << "primal: " + std::to_string(primal);
-            husky::LOG_I << "dual: " + std::to_string(dual);
+            husky::LOG_I << "dual: " + std::to_string(obj);
             husky::LOG_I << "duality_gap: " + std::to_string(gap);
         }
 
