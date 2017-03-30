@@ -1,3 +1,8 @@
+/***
+    
+***/
+
+
 #include <algorithm>
 #include <cmath>
 #include <string>
@@ -40,47 +45,126 @@ public:
     husky::ObjList<ObjT>* test_set;
     // cache of train_set extracted by d
     std::vector<std::vector<SparseVector<double>>> xsp;
-    double* normalized_fea;
 };
 
 class model {
 public:
     int B;
     double C;
+    int num_kernel;
+    int MAX_NUM_KERNEL;
     int max_out_iter;
     int max_iter;
     int max_inn_iter;
-    std::vector<double> mu_set;
-    std::vector<SparseVector<double>> dt_set;
+    double *mu_set;
+    int** dt_set;
 
-    model(){}
+    model() : MAX_NUM_KERNEL(10)
+    {
+        num_kernel = 0;
+        mu_set = NULL;
+        dt_set = NULL;
+    }
 
-    model(const model& m) {
+    model(const model& m) : MAX_NUM_KERNEL(10) {
+        int i, j;
         B = m.B;
         C = m.C;
         max_inn_iter = m.max_inn_iter;
-        dt_set = std::vector<SparseVector<double>>();
-        for (int i = 0; i < m.dt_set.size(); i++) {
-            dt_set.push_back(m.dt_set[i]);
+        num_kernel = m.num_kernel;
+        mu_set = new double[MAX_NUM_KERNEL];
+        for (i = 0; i < num_kernel; i++)
+        {
+            mu_set[i] = m.mu_set[i];
+        }
+        dt_set = new (int*)[MAX_NUM_KERNEL];
+        for (i = 0; i < num_kernel; i++)
+        {
+            dt_set[i] = new int[B];
+            for (j = 0; j < B; j++)
+            {
+                dt_set[i][j] = m.dt_set[i][j];
+            }
         }
     }
+
+    void add_dt(int *dt, int B)
+    {
+        assert(num_kernel <= MAX_NUM_KERNEL && "num_kernel exceeds MAX_NUM_KERNEL");
+        for (int i = 0; i < B; i++)
+        {
+            dt_set[num_kernel][i] = dt[i];
+        }
+        num_kernel += 1;
+        std::fill_n(mu_set, num_kernel, 1.0 / num_kernel);
+    }
+
+    ~model()
+    {
+        if (mu_set != NULL)
+        {
+            delete [] mu_set;
+        }
+        if (dt_set != NULL)
+        {
+            for (int i = 0; i < num_kernel; i++)
+            {
+                delete [] dt_set[i];
+            }
+            delete [] dt_set;
+        }
+    }
+
 };
 
 class solu_xsp {
 public:
+    int l, n, B, num_kernel;
     double obj;
-    DenseVector<double> alpha;
-    // note that w is uncontrolled
-    DenseVector<double> w;
-    // sparse d + sparse d equals to dense d, so may be don't store \sum_mu_dt may be better?
-    // wt in wt_list is controlled but unweighted
-    std::vector<DenseVector<double>> wt_list;
-    solu_xsp() {}
+    double *alpha;
+    double *w;
+    double **wt_list;
 
-    solu_xsp(int l, int n, int T) {
+    solu_xsp() {
+        alpha = NULL;
+        w = NULL;
+        wt_list = NULL;
+    }
+
+    solu_xsp(int l, int n, int B, int num_kernel)
+    {
         obj = 0.0;
-        alpha = DenseVector<double>(l, 0.0);
-        wt_list = std::vector<DenseVector<double>>(T);
+        this.l = l;
+        this.n = n;
+        this.B = B;
+        this.num_kernel = num_kernel;
+        alpha = new double [l];
+        w = new double[n];
+        wt_list = new (double*)[num_kernel];
+        for (int i = 0; i < num_kernel; i++)
+        {
+            wt_list = new double[B];
+        }
+    }
+
+    ~solu_xsp()
+    {
+        if (alpha != NULL)
+        {
+            delete [] alpha;
+        }
+        if (w != NULL)
+        {
+            delete [] w;
+        }
+        if (wt_list != NULL)
+        {
+            for (int i = 0; i < num_kernel; i++)
+            {
+                delete [] wt_list[i];
+            }
+            delete [] wt_list;
+        }
     }
 };
 
@@ -91,7 +175,8 @@ class vector_operator {
         return std::abs(a - b) < epsilon;
     }
 
-    static void show(const std::vector<double>& vec, std::string message_head) {
+    static void show(const std::vector<double>& vec, std::string message_head) 
+    {
         std::string ret = message_head;
         for (int i = 0; i < vec.size(); i++) {
             ret += ": (" + std::to_string(i + 1) + ", " + std::to_string(vec[i]) + "),";
@@ -99,40 +184,42 @@ class vector_operator {
         husky::LOG_I << ret;
     }
 
-    static void show(const DenseVector<double>& vec, std::string message_head) {
+    static void show(const DenseVector<double>& vec, std::string message_head) 
+    {
         std::string ret = message_head + ": ";
         for (int i = 0; i < vec.get_feature_num(); i++) {
             ret += std::to_string(vec[i]) + " "; 
         }
-        husky::LOG_I << ret << "\n";
+        husky::LOG_I << ret;
     }
 
-    static void show(const SparseVector<double>& vec, std::string message_head) {
+    static void show(const SparseVector<double>& vec, std::string message_head) 
+    {
         std::string ret = message_head + ": ";
         for (auto it = vec.begin(); it != vec.end(); it++) {
             ret += std::to_string((*it).fea) + ":" + std::to_string((*it).val) + " ";
         }
-        husky::LOG_I << ret << "\n";
+        husky::LOG_I << ret;
     }
 
-    static double rmse(const std::vector<double>& v1, const std::vector<double>& v2) {
-        assert(v1.size() == v2.size() && "rmse: size of vectors does not agree");
-        double ret = 0.0;
-        for (int i = 0; i < v1.size(); i++) {
-            double diff = v1[i] - v2[i];
-            ret += diff * diff;
+    static void show(int *dt, int B, std::string message_head)
+    {
+        std::string ret = message_head + ": ";
+        for (int i = 0; i < B; i++)
+        {
+            ret += std::to_string(i) + ":" + std::to_string(dt[i]) + " ";
         }
-        return sqrt(ret / v1.size());
+        husky::LOG_I << ret;
     }
 
-    static double rmse(const DenseVector<double>& v1, const DenseVector<double>& v2) {
-        assert(v1.get_feature_num() == v2.get_feature_num() && "rmse: size of dense vectors does not agree");
-        double ret = 0.0;
-        for (int i = 0; i < v1.get_feature_num(); i++) {
-            double diff = v1[i] - v2[i];
-            ret += diff * diff;
+    static void show(double *dt, int B, std::string message_head)
+    {
+        std::string ret = message_head + ": ";
+        for (int i = 0; i < B; i++)
+        {
+            ret += std::to_string(i) + ":" + std::to_string(dt[i]) + " ";
         }
-        return sqrt(ret / v1.get_feature_num());
+        husky::LOG_I << ret;
     }
 
     template <typename T>
@@ -142,86 +229,43 @@ class vector_operator {
         b = t;
     }
 
-    static bool sparse_equal(const SparseVector<double>& v1, const SparseVector<double>& v2) {
-        assert(v1.get_feature_num() == v2.get_feature_num() && "size of sparse vectors does not agree");
-        for (auto it1 = v1.begin(), it2 = v2.begin(); it1 != v1.end() && it2 != v2.end(); it1++, it2++){
-            if ((*it1).fea != (*it2).fea) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    static bool elem_at(const SparseVector<double>& dt, const std::vector<SparseVector<double>>& dt_set) {
-        for (int i = 0; i < dt_set.size(); i++) {
-            if (sparse_equal(dt, dt_set[i])) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    static DenseVector<double> sum_mu_dt(const std::vector<double>& mu_set, const std::vector<SparseVector<double>>& dt_set) {
-        assert(mu_set.size() == dt_set.size() && (dt_set.size() != 0) && "mu_set size not equal to dt size");
-        DenseVector<double> ret(dt_set[0].get_feature_num(), 0.0);
-        for (int i = 0; i < dt_set.size(); i++) {
-            ret = ret + dt_set[i] * mu_set[i];
-        }
-        return ret;
-    }
-
     // this is used when the dense vector are to be controlled by the controll variable
-    static DenseVector<double> elem_wise_dot(const DenseVector<double>& v, const DenseVector<double>& dt) {
-        assert(v.get_feature_num() == dt.get_feature_num() && "elem_wise_dot: feature number of dt not equal to feature number of v");
-        DenseVector<double> ret(v.get_feature_num(), 0.0);
-        for (int i = 0; i < v.get_feature_num(); i++) {
-            ret[i] = v[i] * dt[i]; 
+    static SparseVector<double> elem_wise_dot(const DenseVector<double>& v, int *dt, int B) {
+        SparseVector<double> ret(v.get_feature_num(), 0.0);
+        for (int i = 0; i < B; i++)
+        {
+            ret.set(dt[i], v[dt[i]]);
         }
         return ret;
     }
 
     // this is used when the control variable is the summed control variable
-    static SparseVector<double> elem_wise_dot(const SparseVector<double>& v, const DenseVector<double>& dt) {
-        assert(v.get_feature_num() == dt.get_feature_num() && "elem_wise_dot: feature number of dt not equal to feature number of v");
+    static SparseVector<double> elem_wise_dot(const SparseVector<double>& v, int *dt, int B) 
+    {
         SparseVector<double> ret(v.get_feature_num());
-        for (auto it = v.begin(); it != v.end(); it++) {
-            ret.set((*it).fea, (*it).val * dt[(*it).fea]);
-        }
-        return ret;
-    }
-
-    // this is used when the control variable is the summed control variable, same as above
-    static SparseVector<double> elem_wise_dot(const DenseVector<double>& dt, const SparseVector<double>& v) {
-        assert(v.get_feature_num() == dt.get_feature_num() && "elem_wise_dot: feature number of dt not equal to feature number of v");
-        SparseVector<double> ret(v.get_feature_num());
-        for (auto it = v.begin(); it != v.end(); it++) {
-            ret.set((*it).fea, (*it).val * dt[(*it).fea]);
-        }
-        return ret;
-    }
-
-    // first argument must be the sparse vector and the second argument must be the control variable
-    // also the input argument must be sorted
-    static SparseVector<double> elem_wise_dot(const SparseVector<double>& v, const SparseVector<double>& dt) {
-        assert(v.get_feature_num() == dt.get_feature_num() && "elem_wise_dot: feature number of dt not equal to feature number of v");
-        SparseVector<double> ret(v.get_feature_num());
-        auto it1 = v.begin();
-        auto it2 = dt.begin();
-        while(it1 != v.end() && it2 != dt.end()) {
-            int fea1 = (*it1).fea;
-            int fea2 = (*it2).fea;
-            if (fea1 == fea2) {
-                ret.set(fea1, (*it1).val);
-                it1++;
-                it2++;
-            } else if (fea1 > fea2) {
-                it2++;
-            } else {
-                it1++;
+        int i = 0;
+        auto it = v.begin();
+        while (it != v.end() && i < B;)
+        {
+            int fea = (*it).fea;
+            if (fea < dt[i])
+            {
+                it++;
+            }
+            else if (fea > dt[i])
+            {
+                i++;
+            }
+            else 
+            {
+                ret.set(fea, (*it).val);
+                it++;
+                i++;
             }
         }
         return ret;
     }
+
 
     template <typename T, bool is_sparse>
     static T self_dot_product(const husky::lib::Vector<T, is_sparse>& v) {
@@ -232,17 +276,19 @@ class vector_operator {
         return ret;
     }
 
-    template <typename T>
-    static T self_dot_elem_wise_dot(const SparseVector<T>& v, const std::vector<double>& mu_set, const std::vector<SparseVector<double>>& dt_set) {
-        assert(dt_set.size() != 0 && "dt_set is of size 0");
+    template <typename T, bool is_sparse>
+    static T self_dot_product(T *v, int n)
+    {
         T ret = 0;
-        for (int i = 0; i < mu_set.size(); i++) {
-            ret += mu_set[i] * self_dot_product(elem_wise_dot(v, dt_set[i]));
+        for (int i = 0; i < n; i++)
+        {
+            ret += v[i] * v[i];
         }
         return ret;
     }
 
-    static void my_min(const double *vet, int size, double *min_value, int *min_index) {
+    static void my_min(const double *vet, int size, double *min_value, int *min_index) 
+    {
         int i;
         double tmp = vet[0];
         min_index[0] = 0;
@@ -256,20 +302,7 @@ class vector_operator {
         min_value[0] = tmp;
     }
 
-    static void my_min(const DenseVector<double>& vet, int size, double *min_value, int *min_index) {
-        int i;
-        double tmp = vet[0];
-        min_index[0] = 0;
-
-        for(i=0; i<size; i++){
-            if(vet[i] < tmp){
-                tmp = vet[i];
-                min_index[0] = i;
-            }
-        }
-        min_value[0] = tmp;
-    }
-    static void my_max(const DenseVector<double>& vet, int size, double *max_value, int *max_index)
+    static void my_max(const double *vet, int size, double *max_value, int *max_index)
     {
         int i;
         double tmp = vet[0];
@@ -284,26 +317,12 @@ class vector_operator {
         max_value[0] = tmp;
     }
 
-    template<typename T>
-    static int find_max_index(const std::vector<T>& v) {
-        assert(v.size() != 0 && "find_max_index: size of vector can not be 0");
-        int index = 0;
-        T val = v[0];
-        for (int i = 1; i < v.size(); i++) {
-            if (val < v[i]) {
-                index = i;
-                val = v[i];
-            }
-        }
-        return index;
-    }
-
-    static double find_max_step(const std::vector<double>& mu_set, const DenseVector<double>& desc) {
-        assert(mu_set.size() != 0 && mu_set.size() == desc.get_feature_num() && "arg_min_dm_over_Dm: error");
+    static double find_max_step(const double* mu_set, const double* desc, const int num_kernel) 
+    {
         int i;
         int flag = 1;
         double step_max = 0;
-        for (i = 0; i < mu_set.size(); i++) {
+        for (i = 0; i < num_kernel; i++) {
             if (desc[i] < 0) {
                 // if step_max uninitialized
                 if (flag == 1) {
@@ -322,46 +341,44 @@ class vector_operator {
         return step_max;
     }
 
-    static bool sum_equal_to(const std::vector<double>& v, double val) {
-        if (v.size() == 0) {
-            return false;
+    static void add_sparse_vector(double* w, const SparseVector<double>& v, int n)
+    {
+        assert(v.get_feature_num() == n && "add_sparse_vector: error\n");
+        for (auto it = v.begin(); it != v.end(); it++)
+        {
+            w[(*it).fea] += (*it).val;
         }
-        double sum = 0.0;
-        for (int i = 0; i < v.size(); i++) {
-            sum += v[i];
-        }
-
-        if (double_equals(sum, val)) {
-            return true;
-        }
-        husky::LOG_I << "sum_equal_to: " << std::to_string(sum);
-        return false;
     }
 
-    static bool sum_equal_to(const DenseVector<double>& v, double val) {
-        if (v.get_feature_num() == 0) {
-            return false;
+    static void add_sparse_vector(double* w, const SparseVector<double>& v, double coef, int n)
+    {
+        assert(v.get_feature_num() == n && "add_sparse_vector: error\n");
+        for (auto it = v.begin(); it != v.end(); it++)
+        {
+            w[(*it).fea] += (*it).val * coef;
         }
-        double sum = 0.0;
-        for (int i = 0; i < v.get_feature_num(); i++) {
-            sum += v[i];
-        }
-
-        if (double_equals(sum, val)) {
-            return true;
-        }
-        husky::LOG_I << "sum_equal_to: " << std::to_string(sum);
-        return false;
     }
 
-    static void normalize(DenseVector<double>& v) {
-        double sum = 0.0;
-        for (int i = 0; i < v.get_feature_num(); i++) {
-            sum += v[i];
+    static double dot_sparse_vector(double* w, const SparseVector<double>& v, double coef, int n)
+    {
+        assert(v.get_feature_num() == n && "dot_sparse_vector: error\n");
+        double ret = 0;
+        for (auto it = v.begin(); it != v.end(); it++)
+        {
+            ret += w[(*it).fea] * (*it).val;
         }
-        for (int i = 0; i < v.get_feature_num(); i++) {
-            v[i] /= sum;
+        ret *= coef;
+        return ret;
+    }
+
+    static double dot_product(double* v1, double* v2, int n)
+    {
+        double ret = 0;
+        for (int i = 0; i < n; i++)
+        {
+            ret += v1[i] * v2[i];
         }
+        return ret;
     }
 };
 
@@ -459,63 +476,52 @@ void initialize(data* data_, model* model_) {
     return;
 }
 
-SparseVector<double> find_most_violated_xsp(data* data_, model* model_, solu_xsp* solu_xsp_ = NULL) {
+int* most_violated(data* data_, model* model_, solu_xsp* solu_xsp_ = NULL) 
+{
     int i, j;
-    int B = model_->B;
-    auto& train_set = data_->train_set;
-    DenseVector<double> alpha;
-    DenseVector<double> w(data_->n);
-    if (solu_xsp_ == NULL) {
+    auto& train_set_data = data_->train_set->get_data();
+    double* alpha;
+
+    if (solu_xsp_ == NULL) 
+    {
         // set alpha to 1 because we do not know how much data others have
-        alpha = DenseVector<double>(data_->l, 1.0);
-        w = DenseVector<double>(data_->n, 0.0);
-    } else {
-        for (i = 0; i < model_->mu_set.size(); i++) {
-            const auto& tmp_wt = solu_xsp_->wt_list[i];
-            if (i == 0) {
-                for (j = 0; j < data_->n; j++) {
-                    w[j] = tmp_wt[j];
-                }
-            } else {
-                w[j] += tmp_wt[j];
-            }
-        }
-        // w = solu_xsp_->w;
+        std::fill_n(alpha, data_->l, 1.0);
+    } 
+    else 
+    {
+        alpha = solu_xsp_->alpha;
     }
 
     std::vector<std::pair<int, double>> fea_score;
-
-    if (solu_xsp_ == NULL) {
-        husky::lib::ml::ParameterBucket<double> param_server_w;
-        param_server_w.init(data_->n, 0.0);
-        for (auto& labeled_point : train_set->get_data()) {
-            w += labeled_point.x * labeled_point.y * alpha[i];
-        }
-        for (i = 0; i < data_->n; i++) {
-            param_server_w.update(i, w[i]);
-        }
-        AggregatorFactory::sync();
-        w = param_server_w.get_all_param();
+    husky::lib::ml::ParameterBucket<double> param_server;
+    param_server.init(data_->n, 0.0);
+    for (i = 0; i < data_->l; i++)
+    {
+        vector_operator::add_sparse_vector(w, train_set_data[i].x, train_set_data[i].y * alpha[i], data_->n);
     }
 
     for (i = 0; i < data_->n; i++) {
-        fea_score.push_back(std::make_pair(i, w[i] * w[i]));
+        param_server.update(i, w[i]);
     }
-
+    AggregatorFactory::sync();
+    const auto& tmp_w = param_server.get_all_param();
+    for (i = 0; i < data_->n; i++) {
+        fea_score.push_back(std::make_pair(i, fabs(tmp_w[i])));
+    }
     std::sort(fea_score.begin(), fea_score.end(), [](auto& left, auto& right) {
         return left.second > right.second;
     });
-    SparseVector<double> control_variable(data_->n);
+
+    int *dt = new int[model_->B];
     for (i = 0; i < B; i++) {
         int fea = fea_score[i].first;
-        double val = fea_score[i].second;
-        control_variable.set(fea, 1.0);
+        dt[i] = fea;
     }
-    control_variable.sort_asc();
-    return control_variable;
+    std::sort(std::begin(dt), std::end(dt));
+    return dt;
 }
 
-void cache_xsp(data* data_, const SparseVector<double>& dt) {
+void cache_xsp(data* data_, int *dt, int B) {
     auto& train_set_data = data_->train_set->get_data();
 
     auto& xsp = data_->xsp;
@@ -524,7 +530,7 @@ void cache_xsp(data* data_, const SparseVector<double>& dt) {
     for (auto& labeled_point : train_set_data) {
         auto& xi = labeled_point.x;
 
-        auto xi_sp = vector_operator::elem_wise_dot(xi, dt);
+        auto xi_sp = vector_operator::elem_wise_dot(xi, dt, B);
         xsp[size].push_back(std::move(xi_sp));
     }
 }
@@ -532,19 +538,19 @@ void cache_xsp(data* data_, const SparseVector<double>& dt) {
 void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xsp* input_solu_xsp_ = NULL, double* QD = NULL, int* index = NULL, bool cache = false) {
     int i, j, k;
 
-    const auto& train_set = data_->train_set;
-    const auto& train_set_data = train_set->get_data();
+    const auto& train_set_data = data_->train_set->get_data();
     const auto& xsp = data_->xsp;
-    const auto& mu_set = model_->mu_set;
-    const auto& dt_set = model_->dt_set;
+    const double* mu_set = model_->mu_set;
+    const double** dt_set = model_->dt_set;
 
     const double C = model_->C;
+    const int B = model_->B;
+    const int num_kernel = model_->num_kernel;
     const int W = data_->W;
     const int tid = data_->tid;
     const int n = data_->n;
     const int l = data_->l;
     const int N = data_->N;
-    const int T = mu_set.size();
     const int index_low = data_->idx_l;
     const int index_high = data_->idx_h;
     const int max_iter = model_->max_iter;
@@ -571,27 +577,17 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
     // projected gradient
     double PG;
 
-    DenseVector<double> alpha(l);
+    double* alpha = new double[l];
     double* alpha_orig = new double[l];
     double* alpha_inc = new double[l];
-    // DenseVector<double> alpha_orig(l);
-    // DenseVector<double> alpha_inc(l);
-    // DenseVector<double> w(n, 0.0);
-    // DenseVector<double> w_orig(n, 0.0);
-    // DenseVector<double> delta_w(n, 0.0);
-    // DenseVector<double> best_w(n, 0.0);
-    // husky::lib::ml::ParameterBucket<double> param_server_w;
-    // param_server_w.init(n, 0.0);
-    std::vector<DenseVector<double>>wt_list(T);
-    std::vector<DenseVector<double>>wt_list_orig(T);
-    std::vector<DenseVector<double>>delta_wt_list(T);
-    std::vector<DenseVector<double>>best_wt_list(T);
-    std::vector<husky::lib::ml::ParameterBucket<double>> param_server_wt_list(T);
-    for (i = 0; i < T; i++) {
-        wt_list_orig[i] = DenseVector<double>(n);
-        delta_wt_list[i] = DenseVector<double>(n);
-        best_wt_list[i] = DenseVector<double>(n);
-        param_server_wt_list[i].init(n, 0.0);
+    double** wt_list = new double[num_kernel][n];
+    double** wt_list_orig = new double[num_kernel][n];
+    double** delta_wt_list = new double[num_kernel][n];
+    double** best_wt_list = new double[num_kernel][n];
+    std::vector<husky::lib::ml::ParameterBucket<double>> param_server(num_kernel);
+    for (i = 0; i < num_kernel; i++) 
+    {
+        param_server[i].init(n, 0.0);
     }
 
     Aggregator<double> loss_agg(0.0, [](double& a, const double& b) { a += b; });
@@ -606,29 +602,41 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
     eta_agg.to_reset_each_iter();
 
     // if input_solu_xsp_ == NULL => alpha = 0 => wt_list is 0, no need to initialize
-    if (input_solu_xsp_ == NULL) {
-        for (i = 0; i < l; i++) {
+    if (input_solu_xsp_ == NULL) 
+    {
+        for (i = 0; i < l; i++) 
+        {
             alpha[i] = 0;
         }
-        for (i = 0; i < T; i++) {
-            wt_list[i] = DenseVector<double>(n, 0.0);
+        for (i = 0; i < num_kernel; i++) 
+        {
+            for (j = 0; j < n; j++)
+            {
+                wt_list[i][j] = 0
+            }
         }
     } else {
         const auto& input_alpha = input_solu_xsp_->alpha;
         const auto& input_wt_list = input_solu_xsp_->wt_list;
-        for (i = 0; i < l; i++) {
-            alpha[i] = input_alpha[i];
+        for (i = 0; i < l; i++) 
+        {
+            alpha[i] = input_solu_xsp_->alpha[i];
         }
-        for (i = 0; i < T; i++) {
-            wt_list[i] = input_wt_list[i];
+        for (i = 0; i < num_kernel; i++) 
+        {
+            for (j = 0; j < n; j++)
+            {
+                wt_list[i][j] = input_solu_xsp_->wt_list[i][j];
+            }
         }
     }
-    if (!cache) {
+    if (!cache) 
+    {
         QD = new double[l];
         index = new int[l];
         for (i = 0; i < l; i++) {
             QD[i] = 0;
-            for (k = 0; k < T; k++) {
+            for (k = 0; k < num_kernel; k++) {
                 QD[i] += vector_operator::self_dot_product(xsp[k][i]) * mu_set[k];
             }
             QD[i] += diag;
@@ -641,12 +649,17 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
 
     /*******************************************************************/
     // if input_solu_xsp_ is NULL, then we will initialize alpha with 0 => w will be 0 => primal_obj = C * N, obj = 0
-    if (input_solu_xsp_ != NULL) {
+    if (input_solu_xsp_ != NULL) 
+    {
         // wt_list should have already been initialize with the input wt_list
-        for (i = 0; i < T; i++) {
-            reg += vector_operator::self_dot_product(wt_list[i]) * mu_set[i];
+        for (i = 0; i < num_kernel; i++) {
+            for (j = 0; j < n; j++)
+            {
+                reg += wt_list[i][j] * wt_list[i][j];
+            }
+            reg *= mu_set[i];
         }
-        // set parameter server back to 0.0
+
         // reg = self_dot_product(w);
         reg *= 0.5;
         Aggregator<double> et_alpha_agg(0.0, [](double& a, const double& b) { a += b; });
@@ -654,12 +667,12 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
         for (i = 0; i < l; i++) {
             const auto& labeled_point = train_set_data[i];
             loss = 0;
-            for (j = 0; j < T; j++) {
-                loss += mu_set[j] * wt_list[j].dot(xsp[j][i]);
+            // loss = 1 - labeled_point.y * w.dot(labeled_point.x);
+            for (j = 0; j < num_kernel; j++) {
+                loss += vector_operator::dot_sparse_vector(wt_list[j], xsp[j][i], mu_set[j], n);
             }
             loss *= labeled_point.y * -1;
             loss += 1;
-            // loss = 1 - labeled_point.y * w.dot(labeled_point.x);
             if (loss > 0) {
                 // l2 loss
                 loss_agg.update(C * loss * loss);
@@ -709,8 +722,8 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
 
                 // G = (w.dot(xi)) * yi - 1 + diag * alpha[i];
                 G = 0;
-                for (j = 0; j < T; j++) {
-                    G += mu_set[j] * wt_list[j].dot(xsp[j][i]);
+                for (j = 0; j < num_kernel; j++) {
+                    G += vector_operator::dot_sparse_vector(wt_list[j], xsp[j][i], mu_set[j], n);
                 }
                 G = G * yi - 1 + diag * alpha[i];
 
@@ -732,8 +745,9 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
                     alpha[i] = std::min(std::max(alpha[i] - G / QD[i], 0.0), INF);
                     loss = yi * (alpha[i] - alpha_old);
                     // w += xi * loss;
-                    for (j = 0; j < T; j++) {
-                        wt_list[j] += xsp[j][i] * loss;
+                    for (j = 0; j < num_kernel; j++) {
+                        // wt_list[j] += xsp[j][i] * loss;
+                        vector_operator::add_sparse_vector(wt_list[j], xsp[j][i], loss, n);
                     }
                 }
             }
@@ -759,44 +773,38 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
         eta_agg.update(max_step);
 
         // this is very inefficient as most of the entries will be 0
-        for (i = 0; i < T; i++) {
-            param_server_wt_list[i].init(n, 0.0);
+        for (i = 0; i < num_kernel; i++) {
+            param_server[i].init(n, 0.0);
             for (j = 0; j < n; j++) {
-                param_server_wt_list[i].update(j, wt_list[i][j] - wt_list_orig[i][j]);
+                param_server[i].update(j, wt_list[i][j] - wt_list_orig[i][j]);
             }
         }
-        // for (i = 0; i < n; i++) {
-        //     param_server_w.update(i, w[i] - w_orig[i]);
-        // }
         AggregatorFactory::sync();
 
         sum_alpha_inc = sum_alpha_inc_agg.get_value();
         alpha_inc_square = alpha_inc_square_agg.get_value();
         alpha_inc_dot_alpha = alpha_inc_dot_alpha_agg.get_value();
         max_step = eta_agg.get_value();
-        for (i = 0; i < T; i++) {
-            const auto& tmp_wt = param_server_wt_list[i].get_all_param();
+        for (i = 0; i < num_kernel; i++) {
+            const auto& tmp_wt = param_server[i].get_all_param();
             for (j = 0; j < n; j++) {
                 delta_wt_list[i][j] = tmp_wt[j];
             }
-            // delta_wt_list[i] = param_server_wt_list[i].get_all_param();
         }
-        // delta_w = param_server_w.get_all_param();
-        for (i = 0; i < T; i++) {
-            w_inc_square += mu_set[i] * vector_operator::self_dot_product(delta_wt_list[i]);
-            w_dot_w_inc += mu_set[i] * wt_list_orig[i].dot(delta_wt_list[i]);
+        for (i = 0; i < num_kernel; i++) {
+            w_inc_square += mu_set[i] * vector_operator::self_dot_product(delta_wt_list[i], n);
+            w_dot_w_inc += mu_set[i] * vector_operator::dot_product(wt_list_orig[i], delta_wt_list[i], n);
         }
         // w_inc_square += self_dot_product(delta_w);
         // w_dot_w_inc += w_orig.dot(delta_w);
         // get step size
         grad_alpha_inc = w_dot_w_inc + alpha_inc_dot_alpha - sum_alpha_inc;
         if (grad_alpha_inc >= 0) {
-            for (i = 0; i < T; i++) {
+            for (i = 0; i < num_kernel; i++) {
                 for (j = 0; j < n; j++) {
                     wt_list[i][j] = best_wt_list[i][j];
                 }
             }
-            // w = best_w;
             break;
         }
 
@@ -807,7 +815,7 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
             alpha[i] = alpha_orig[i] + eta * alpha_inc[i];
         }
         // alpha = alpha_orig + eta * alpha_inc;
-        for (i = 0; i < T; i++) {
+        for (i = 0; i < num_kernel; i++) {
             for (j = 0; j < n; j++) {
                 wt_list[i][j] = wt_list_orig[i][j] + eta * delta_wt_list[i][j];
             }
@@ -824,8 +832,9 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
         for (i = 0; i < l; i++) {
             double yi = train_set_data[i].y;
             loss = 0;
-            for (j = 0; j < T; j++) {
-                loss += wt_list[j].dot(xsp[j][i]);
+            for (j = 0; j < num_kernel; j++) {
+                loss += vector_operator::dot_sparse_vector(wt_list[j], xsp[j][i], mu_set[j], n);
+                // loss += wt_list[j].dot(xsp[j][i]);
             }
             loss *= yi * -1;
             loss += 1;
@@ -860,7 +869,7 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
         }
 
         if (gap < EPS) {
-            for (i = 0; i < T; i++) {
+            for (i = 0; i < num_kernel; i++) {
                 for (j = 0; j < n; j++) {
                     wt_list[i][j] = best_wt_list[i][j];
                 }
@@ -875,37 +884,59 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
     output_solu_xsp_->alpha = alpha;
     output_solu_xsp_->wt_list = wt_list;
 
-    if (!cache) {
-        delete[] QD;
-        delete[] index;
+    for (i = 0; i < num_kernel; i++)
+    {
+        delete  [] wt_list_orig[i];
+        delete  [] delta_wt_list[i];
+        delete  [] best_wt_list;
     }
-    delete[] alpha_inc;
-    delete[] alpha_orig;
+    delete [] wt_list_orig;
+    delete [] delta_wt_list;
+    delete [] best_wt_list;
+    delete [] alpha_inc;
+    delete [] alpha_inc_square;
+
+    if (!cache) {
+        delete [] QD;
+        delete [] index;
+    }
+    delete [] alpha_inc;
+    delete [] alpha_orig;
 }
 
-void evaluate(data* data_, model* model_, solu_xsp* solu_xsp_) {
+void evaluate(data* data_, model* model_, solu_xsp* solu_xsp_) 
+{
+    int i, j;
     const auto& test_set = data_->test_set;
-    const auto& wt_list = solu_xsp_->wt_list;
-    const auto& mu_set = model_->mu_set;
-    DenseVector<double> w_controlled(data_->n, 0.0);
-    for (int i = 0; i < mu_set.size(); i++) {
-        w_controlled += mu_set[i] * wt_list[i];
+    double** wt_list = solu_xsp_->wt_list;
+    double* mu_set = model_->mu_set;
+    double* w = new double[data_->n];
+
+    for (i = 0; i < num_kernel; i++) 
+    {
+        for (j = 0; j < data_->n; j++)
+        {
+            w[j] += mu_set[i] * wt_list[i][j];
+        }
     }
 
     double indicator;
     Aggregator<int> error_agg(0, [](int& a, const int& b) { a += b; });
     Aggregator<int> num_test_agg(0, [](int& a, const int& b) { a += b; });
     auto& ac = AggregatorFactory::get_channel();
-    list_execute(*test_set, {}, {&ac}, [&](ObjT& labeled_point) {
-        double indicator = w_controlled.dot(labeled_point.x);
+    list_execute(*test_set, {}, {&ac}, [&](ObjT& labeled_point) 
+    {
+        double indicator = vector_operator::dot_sparse_vector(w, labeled_point.x, 1, data_->n);
         indicator *= labeled_point.y;
-        if (indicator <= 0) {
+        if (indicator <= 0) 
+        {
             error_agg.update(1);
         }
         num_test_agg.update(1);
     });
 
-    if (data_->tid == 0) {
+    if (data_->tid == 0) 
+    {
         husky::LOG_I << "Classification accuracy on testing set with [B = " + std::to_string(model_->B) + "][C = " + 
                         std::to_string(model_->C) + "], " +
                         "[max_out_iter = " + std::to_string(model_->max_out_iter) + "], " +
@@ -924,36 +955,17 @@ void run_bqo_svm() {
     SparseVector<double> dt1(data_->n);
     SparseVector<double> dt2(data_->n);
     SparseVector<double> dt3(data_->n);
-    dt1.set(7 ,1.0);
-    dt1.set(22 ,1.0);
-    dt1.set(28 ,1.0);
-    dt1.set(31 ,1.0);
-    dt1.set(74 ,1.0);
 
-    dt2.set(7, 1.0);
-    dt2.set(8, 1.0);
-    dt2.set(45 ,1.0);
-    dt2.set(76 ,1.0);
-    dt2.set(78 ,1.0);
-
-    dt3.set(12 ,1.0);
-    dt3.set(59 ,1.0);
-    dt3.set(60 ,1.0);
-    dt3.set(83 ,1.0);
-    dt3.set(90 ,1.0);
-
-    model_->dt_set.push_back(dt1);
-    model_->dt_set.push_back(dt2);
-    model_->dt_set.push_back(dt3);
-    model_->mu_set.push_back(1.0);
-    model_->mu_set.push_back(1.0);
-    model_->mu_set.push_back(1.0);
+    int dt1[] = {7, 22, 28, 31, 74};
+    int dt2[] = {7, 8, 45, 76, 78};
+    int dt3[] = {12, 59, 60, 83, 90};
+    model_->dt_set.add(dt1);
+    model_->dt_set.add(dt2);
+    model_->dt_set.add(dt3);
     cache_xsp(data_, dt1);
     cache_xsp(data_, dt2);
     cache_xsp(data_, dt3);
-    for (int i = 0; i < 3; i++) {
-        model_->mu_set[i] /= 3.0;
-    }
+
     bqo_svm_xsp(data_, model_, solu_xsp_);
     vector_operator::show(model_->mu_set, "mu_set");
     husky::LOG_I << "trainning objective: " + std::to_string(solu_xsp_->obj);
@@ -1408,6 +1420,7 @@ void job_runner() {
     data* data_ = new data;
     model* model_ = new model;
     solu_xsp* solu_xsp_ = new solu_xsp;
+
     initialize(data_, model_);
 
     int iter = 0;
@@ -1415,22 +1428,19 @@ void job_runner() {
     double mkl_obj = INF;
     double last_obj = INF;
     double obj_diff = 0.0;
-    SparseVector<double> dt(data_->n);
-    while(iter < max_out_iter) {
+    int *dt;
+    while(iter < max_out_iter) 
+    {
         last_obj = mkl_obj;
-        if (iter == 0) {
-            dt = find_most_violated_xsp(data_, model_);
-        } else {
-            dt = find_most_violated_xsp(data_, model_, solu_xsp_);
+        if (iter == 0) 
+        {
+            dt = most_violated(data_, model_);
+        } 
+        else 
+        {
+            dt = most_violated(data_, model_, solu_xsp_);
         }
-        // if (vector_operator::elem_at(dt, model_->dt_set)) {
-        //     if (data_->tid == 0) {
-        //         husky::LOG_I << "FGM converged";
-        //     }
-        //     break;
-        // }
-        model_->dt_set.push_back(dt);
-        model_->mu_set.push_back(1.0);
+        model_->add_dt(dt);
         cache_xsp(data_, dt);
         husky::LOG_I << "cache completed! number of kernel: " + std::to_string(data_->xsp.size());
         simpleMKL(data_, model_, solu_xsp_);
@@ -1456,7 +1466,7 @@ void job_runner() {
         evaluate(data_, model_, solu_xsp_);
     }
     if (data_->tid == 0) {
-        vector_operator::show(model_->mu_set, "mu_set");
+        vector_operator::show(model_->mu_set, model_->num_kernel, "mu_set");
     }
     evaluate(data_, model_, solu_xsp_);
 }
