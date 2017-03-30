@@ -463,7 +463,7 @@ SparseVector<double> find_most_violated_xsp(data* data_, model* model_, solu_xsp
     int B = model_->B;
     auto& train_set = data_->train_set;
     DenseVector<double> alpha;
-    DenseVector<double> w;
+    DenseVector<double> w(data_->n);
     if (solu_xsp_ == NULL) {
         // set alpha to 1 because we do not know how much data others have
         alpha = DenseVector<double>(data_->l, 1.0);
@@ -571,8 +571,10 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
     double PG;
 
     DenseVector<double> alpha(l);
-    DenseVector<double> alpha_orig(l);
-    DenseVector<double> alpha_inc(l);
+    double* alpha_orig = new double[l];
+    double* alpha_inc = new double[l];
+    // DenseVector<double> alpha_orig(l);
+    // DenseVector<double> alpha_inc(l);
     // DenseVector<double> w(n, 0.0);
     // DenseVector<double> w_orig(n, 0.0);
     // DenseVector<double> delta_w(n, 0.0);
@@ -617,10 +619,7 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
             alpha[i] = input_alpha[i];
         }
         for (i = 0; i < T; i++) {
-            for (j = 0; j < n; j++) {
-                wt_list[i][j] = input_wt_list[i][j];
-            }
-            // wt_list[i] = input_wt_list[i];
+            wt_list[i] = input_wt_list[i];
         }
     }
     if (!cache) {
@@ -640,42 +639,37 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
     obj = 0;
 
     /*******************************************************************/
-    // comment the following if alpha is 0
-    // At first I wonder why don't we set old_primal to 0 here
-    // But then I found out that if i did so, the primal value will always be larger than old_primal
-    // and as a result best_w is set to w and will be return, which leads to the classifier giving 0
-    // as output, which sits right on the decision boundary.
-    // this problem is solved if we set alpha to be non-zero though
+    // if input_solu_xsp_ is NULL, then we will initialize alpha with 0 => w will be 0 => primal_obj = C * N, obj = 0
     if (input_solu_xsp_ != NULL) {
         // wt_list should have already been initialize with the input wt_list
         for (i = 0; i < T; i++) {
             reg += vector_operator::self_dot_product(wt_list[i]) * mu_set[i];
         }
-    }
-    // set parameter server back to 0.0
-    // reg = self_dot_product(w);
-    reg *= 0.5;
-    Aggregator<double> et_alpha_agg(0.0, [](double& a, const double& b) { a += b; });
-    et_alpha_agg.to_reset_each_iter();
-    for (i = 0; i < l; i++) {
-        const auto& labeled_point = train_set_data[i];
-        loss = 0;
-        for (j = 0; j < T; j++) {
-            loss += mu_set[j] * wt_list[j].dot(xsp[j][i]);
+        // set parameter server back to 0.0
+        // reg = self_dot_product(w);
+        reg *= 0.5;
+        Aggregator<double> et_alpha_agg(0.0, [](double& a, const double& b) { a += b; });
+        et_alpha_agg.to_reset_each_iter();
+        for (i = 0; i < l; i++) {
+            const auto& labeled_point = train_set_data[i];
+            loss = 0;
+            for (j = 0; j < T; j++) {
+                loss += mu_set[j] * wt_list[j].dot(xsp[j][i]);
+            }
+            loss *= labeled_point.y * -1;
+            loss += 1;
+            // loss = 1 - labeled_point.y * w.dot(labeled_point.x);
+            if (loss > 0) {
+                // l2 loss
+                loss_agg.update(C * loss * loss);
+            }
+            // this is a minomer, actually this calculate both aTa and eTa
+            et_alpha_agg.update(alpha[i] * (alpha[i] * diag - 2));
         }
-        loss *= labeled_point.y * -1;
-        loss += 1;
-        // loss = 1 - labeled_point.y * w.dot(labeled_point.x);
-        if (loss > 0) {
-            // l2 loss
-            loss_agg.update(C * loss * loss);
-        }
-        // this is a minomer, actually this calculate both aTa and eTa
-        et_alpha_agg.update(alpha[i] * (alpha[i] * diag - 2));
+        AggregatorFactory::sync();
+        old_primal += reg + loss_agg.get_value();
+        obj += 0.5 * et_alpha_agg.get_value() + reg;
     }
-    AggregatorFactory::sync();
-    old_primal += reg + loss_agg.get_value();
-    obj += 0.5 * et_alpha_agg.get_value() + reg;
     /*******************************************************************/
 
     iter_out = 0;
@@ -688,7 +682,10 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
                 wt_list_orig[i][j] = wt_list[i][j];
             }
         }
-        alpha_orig = alpha;
+        for (i = 0; i < l; i++) {
+            alpha_orig[i] = alpha[i];
+        }
+        // alpha_orig = alpha;
         sum_alpha_inc = 0;
         w_inc_square = 0;
         w_dot_w_inc = 0;
@@ -741,8 +738,10 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
             }
             inn_iter++;
         }
-
-        alpha_inc = alpha - alpha_orig;
+        for (i = 0; i < l; i++) {
+            alpha_inc[i] = alpha[i] - alpha_orig[i];
+        }
+        // alpha_inc = alpha - alpha_orig;
         for (i = 0; i < l; i++) {
             alpha_inc[i] = alpha[i] - alpha_orig[i];
             sum_alpha_inc += alpha_inc[i];
@@ -803,7 +802,10 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
         double aQa = alpha_inc_square + w_inc_square;
         eta = std::min(max_step, -grad_alpha_inc /aQa);
 
-        alpha = alpha_orig + eta * alpha_inc;
+        for (i = 0; i < l; i++) {
+            alpha[i] = alpha_orig[i] + eta * alpha_inc[i];
+        }
+        // alpha = alpha_orig + eta * alpha_inc;
         for (i = 0; i < T; i++) {
             for (j = 0; j < n; j++) {
                 wt_list[i][j] = wt_list_orig[i][j] + eta * delta_wt_list[i][j];
@@ -872,8 +874,12 @@ void bqo_svm_xsp(data* data_, model* model_, solu_xsp* output_solu_xsp_, solu_xs
     output_solu_xsp_->alpha = alpha;
     output_solu_xsp_->wt_list = wt_list;
 
-    delete[] QD;
-    delete[] index;
+    if (!cache) {
+        delete[] QD;
+        delete[] index;
+    }
+    delete[] alpha_inc;
+    delete[] alpha_orig;
 }
 
 void evaluate(data* data_, model* model_, solu_xsp* solu_xsp_) {
@@ -901,6 +907,7 @@ void evaluate(data* data_, model* model_, solu_xsp* solu_xsp_) {
     if (data_->tid == 0) {
         husky::LOG_I << "Classification accuracy on testing set with [B = " + std::to_string(model_->B) + "][C = " + 
                         std::to_string(model_->C) + "], " +
+                        "[max_out_iter = " + std::to_string(model_->max_out_iter) + "], " +
                         "[max_iter = " + std::to_string(model_->max_iter) + "], " +
                         "[max_inn_iter = " + std::to_string(model_->max_inn_iter) + "], " +
                         "[test set size = " + std::to_string(num_test_agg.get_value()) + "]: " +
@@ -992,8 +999,8 @@ void simpleMKL(data* data_, model* model_, solu_xsp* solu_) {
 
     bqo_svm_xsp(data_, model_, solu_, NULL, QD, index, true);
     double obj = solu_->obj;
-    auto& wt_list = solu_->wt_list;
     auto& alpha = solu_->alpha;
+    auto& wt_list = solu_->wt_list;
     // compute gradient
     DenseVector<double> grad(T);
     for (i = 0; i < T; i++) {
@@ -1111,7 +1118,7 @@ void simpleMKL(data* data_, model* model_, solu_xsp* solu_) {
 
                     desc[max_index] = -sum_desc;
                     for (i = 0; i < l; i++) {
-                        solu_->alpha[i] = tmp_solu->alpha[i];
+                        alpha[i] = tmp_solu->alpha[i];
                     }
                     for (i = 0; i < T; i++) {
                         const auto& tmp_wt = tmp_solu->wt_list[i];
@@ -1348,6 +1355,54 @@ void simpleMKL(data* data_, model* model_, solu_xsp* solu_) {
     delete tmp_solu;
 }
 
+void run_simple_mkl() {
+    data* data_ = new data;
+    model* model_ = new model;
+    solu_xsp* solu_ = new solu_xsp;
+    initialize(data_, model_);
+    SparseVector<double> dt1(data_->n);
+    SparseVector<double> dt2(data_->n);
+    SparseVector<double> dt3(data_->n);
+    dt1.set(7 ,1.0);
+    dt1.set(22 ,1.0);
+    dt1.set(28 ,1.0);
+    dt1.set(31 ,1.0);
+    dt1.set(74 ,1.0);
+
+    dt2.set(7, 1.0);
+    dt2.set(8, 1.0);
+    dt2.set(45 ,1.0);
+    dt2.set(76 ,1.0);
+    dt2.set(78 ,1.0);
+
+    dt3.set(12 ,1.0);
+    dt3.set(59 ,1.0);
+    dt3.set(60 ,1.0);
+    dt3.set(83 ,1.0);
+    dt3.set(90 ,1.0);
+
+    model_->dt_set.push_back(dt1);
+    model_->dt_set.push_back(dt2);
+    model_->dt_set.push_back(dt3);
+    model_->mu_set.push_back(1.0);
+    model_->mu_set.push_back(1.0);
+    model_->mu_set.push_back(1.0);
+    cache_xsp(data_, dt1);
+    cache_xsp(data_, dt2);
+    cache_xsp(data_, dt3);
+    for (int i = 0; i < 3; i++) {
+        model_->mu_set[i] /= 3.0;
+    }
+
+    // simpleMKL_old(data_, model_, solu_);
+    simpleMKL(data_, model_, solu_);
+    if (data_->tid == 0) {
+        vector_operator::show(model_->mu_set, "mu_set");
+        husky::LOG_I << "trainning objective: " + std::to_string(solu_->obj);
+    }
+    evaluate(data_, model_, solu_);    
+}
+
 void job_runner() {
     data* data_ = new data;
     model* model_ = new model;
@@ -1368,7 +1423,9 @@ void job_runner() {
             dt = find_most_violated_xsp(data_, model_, solu_xsp_);
         }
         if (vector_operator::elem_at(dt, model_->dt_set)) {
-            husky::LOG_I << "FGM converged";
+            if (data_->tid == 0) {
+                husky::LOG_I << "FGM converged";
+            }
             break;
         }
         model_->dt_set.push_back(dt);
@@ -1378,26 +1435,34 @@ void job_runner() {
         simpleMKL(data_, model_, solu_xsp_);
         mkl_obj = solu_xsp_->obj;
         obj_diff = fabs(mkl_obj - last_obj);
-        husky::LOG_I << "[iteration " + std::to_string(iter) + "][mkl_obj " + std::to_string(mkl_obj) + "][obj_diff " + std::to_string(obj_diff) + "]";
-        vector_operator::show(model_->mu_set, "mu_set");
+        if (data_->tid == 0) {
+            husky::LOG_I << "[iteration " + std::to_string(iter) + "][mkl_obj " + std::to_string(mkl_obj) + "][obj_diff " + std::to_string(obj_diff) + "]";
+            vector_operator::show(model_->mu_set, "mu_set");
+        }
         if (obj_diff < 0.001 * abs(last_obj)) {
-            husky::LOG_I << "FGM converged";
+            if (data_->tid == 0) {
+                husky::LOG_I << "FGM converged";
+            }
             break;
         }
         if (model_->mu_set[iter] < 0.0001) {
-            husky::LOG_I << "FGM converged";
+            if (data_->tid == 0) { 
+                husky::LOG_I << "FGM converged";
+            }
             break;
         }
         iter++;
         evaluate(data_, model_, solu_xsp_);
     }
-    vector_operator::show(model_->mu_set, "mu_set");
+    if (data_->tid == 0) {
+        vector_operator::show(model_->mu_set, "mu_set");
+    }
     evaluate(data_, model_, solu_xsp_);
 }
 
 void init() {
     if (husky::Context::get_param("is_sparse") == "true") {
-        job_runner();
+        run_simple_mkl();
     } else {
         husky::LOG_I << "Dense data format is not supported";
     }

@@ -1776,8 +1776,8 @@ void run_simple_mkl() {
     }
 
     // simpleMKL_old(data_, model_, solu_);
-    // simpleMKL(data_, model_, solu_);
-    dcd_svm_cache_xsp(data_, model_, solu_);
+    simpleMKL(data_, model_, solu_);
+    // dcd_svm_cache_xsp(data_, model_, solu_);
     vector_operator::show(model_->mu_set, "mu_set");
     husky::LOG_I << "trainning objective: " + std::to_string(solu_->obj);
     evaluate(data_, model_, solu_);
