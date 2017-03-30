@@ -40,6 +40,7 @@ public:
     husky::ObjList<ObjT>* test_set;
     // cache of train_set extracted by d
     std::vector<std::vector<SparseVector<double>>> xsp;
+    double* normalized_fea;
 };
 
 class model {
@@ -1422,12 +1423,12 @@ void job_runner() {
         } else {
             dt = find_most_violated_xsp(data_, model_, solu_xsp_);
         }
-        if (vector_operator::elem_at(dt, model_->dt_set)) {
-            if (data_->tid == 0) {
-                husky::LOG_I << "FGM converged";
-            }
-            break;
-        }
+        // if (vector_operator::elem_at(dt, model_->dt_set)) {
+        //     if (data_->tid == 0) {
+        //         husky::LOG_I << "FGM converged";
+        //     }
+        //     break;
+        // }
         model_->dt_set.push_back(dt);
         model_->mu_set.push_back(1.0);
         cache_xsp(data_, dt);
@@ -1462,7 +1463,7 @@ void job_runner() {
 
 void init() {
     if (husky::Context::get_param("is_sparse") == "true") {
-        run_simple_mkl();
+        job_runner();
     } else {
         husky::LOG_I << "Dense data format is not supported";
     }
