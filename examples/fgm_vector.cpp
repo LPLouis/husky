@@ -1717,6 +1717,7 @@ void run_dcd_svm() {
     model* model_ = new model;
     solu* solu_ = new solu;
     initialize(data_, model_);
+    auto start = std::chrono::steady_clock::now();
     SparseVector<double> dt = find_most_violated(data_, model_);
     // auto start = std::chrono::steady_clock::now();
     model_->dt_set.push_back(dt);
@@ -1726,13 +1727,13 @@ void run_dcd_svm() {
     // evaluate(data_, model_, solu_);
 
     solu_xsp* solu_xsp_ = new solu_xsp;
-    auto start = std::chrono::steady_clock::now();
     cache_xsp(data_, dt);
     husky::LOG_I << "cache completed! time elapsed: " + std::to_string(std::chrono::duration_cast<std::chrono::duration<float>>(std::chrono::steady_clock::now() - start).count());
     dcd_svm_cache_xsp(data_, model_, solu_xsp_);
-    auto end = std::chrono::steady_clock::now();
-    husky::LOG_I << "time elapsed: " + std::to_string(std::chrono::duration_cast<std::chrono::duration<float>>(std::chrono::steady_clock::now() - start).count());
     evaluate(data_, model_, solu_xsp_);    
+    auto end = std::chrono::steady_clock::now();
+    husky::LOG_I << "Time elapsed: "
+                    << std::chrono::duration_cast<std::chrono::duration<float>>(end - start).count();
 }
 
 // for testing of simple_mkl using designated kernel (B is not used)
@@ -1833,7 +1834,7 @@ void job_runner() {
 
 void init() {
     if (husky::Context::get_param("is_sparse") == "true") {
-        run_simple_mkl();
+        run_dcd_svm();
     } else {
         husky::LOG_I << "Dense data format is not supported";
     }

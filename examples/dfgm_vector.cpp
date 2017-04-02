@@ -952,24 +952,30 @@ void run_bqo_svm() {
     model* model_ = new model;
     solu_xsp* solu_xsp_ = new solu_xsp;
     initialize(data_, model_);
-    SparseVector<double> dt1(data_->n);
-    SparseVector<double> dt2(data_->n);
-    SparseVector<double> dt3(data_->n);
+    auto start = std::chrono::steady_clock::now();
+    // SparseVector<double> dt1(data_->n);
+    // SparseVector<double> dt2(data_->n);
+    // SparseVector<double> dt3(data_->n);
 
-    int dt1[] = {7, 22, 28, 31, 74};
-    int dt2[] = {7, 8, 45, 76, 78};
-    int dt3[] = {12, 59, 60, 83, 90};
-    model_->dt_set.add(dt1);
-    model_->dt_set.add(dt2);
-    model_->dt_set.add(dt3);
-    cache_xsp(data_, dt1);
-    cache_xsp(data_, dt2);
-    cache_xsp(data_, dt3);
-
+    // int dt1[] = {7, 22, 28, 31, 74};
+    // int dt2[] = {7, 8, 45, 76, 78};
+    // int dt3[] = {12, 59, 60, 83, 90};
+    // model_->dt_set.add(dt1);
+    // model_->dt_set.add(dt2);
+    // model_->dt_set.add(dt3);
+    // cache_xsp(data_, dt1);
+    // cache_xsp(data_, dt2);
+    // cache_xsp(data_, dt3);
+    int *dt; = most_violated(data_, model_);
+    model_->add_dt(dt);
+    cache_xsp(data_, dt);
     bqo_svm_xsp(data_, model_, solu_xsp_);
     vector_operator::show(model_->mu_set, "mu_set");
     husky::LOG_I << "trainning objective: " + std::to_string(solu_xsp_->obj);
     evaluate(data_, model_, solu_xsp_);
+    auto end = std::chrono::steady_clock::now();
+    husky::LOG_I << "Time elapsed: "
+                    << std::chrono::duration_cast<std::chrono::duration<float>>(end - start).count();
 }
 
 void simpleMKL(data* data_, model* model_, solu_xsp* solu_) {
@@ -1368,54 +1374,6 @@ void simpleMKL(data* data_, model* model_, solu_xsp* solu_) {
     delete tmp_solu;
 }
 
-void run_simple_mkl() {
-    data* data_ = new data;
-    model* model_ = new model;
-    solu_xsp* solu_ = new solu_xsp;
-    initialize(data_, model_);
-    SparseVector<double> dt1(data_->n);
-    SparseVector<double> dt2(data_->n);
-    SparseVector<double> dt3(data_->n);
-    dt1.set(7 ,1.0);
-    dt1.set(22 ,1.0);
-    dt1.set(28 ,1.0);
-    dt1.set(31 ,1.0);
-    dt1.set(74 ,1.0);
-
-    dt2.set(7, 1.0);
-    dt2.set(8, 1.0);
-    dt2.set(45 ,1.0);
-    dt2.set(76 ,1.0);
-    dt2.set(78 ,1.0);
-
-    dt3.set(12 ,1.0);
-    dt3.set(59 ,1.0);
-    dt3.set(60 ,1.0);
-    dt3.set(83 ,1.0);
-    dt3.set(90 ,1.0);
-
-    model_->dt_set.push_back(dt1);
-    model_->dt_set.push_back(dt2);
-    model_->dt_set.push_back(dt3);
-    model_->mu_set.push_back(1.0);
-    model_->mu_set.push_back(1.0);
-    model_->mu_set.push_back(1.0);
-    cache_xsp(data_, dt1);
-    cache_xsp(data_, dt2);
-    cache_xsp(data_, dt3);
-    for (int i = 0; i < 3; i++) {
-        model_->mu_set[i] /= 3.0;
-    }
-
-    // simpleMKL_old(data_, model_, solu_);
-    simpleMKL(data_, model_, solu_);
-    if (data_->tid == 0) {
-        vector_operator::show(model_->mu_set, "mu_set");
-        husky::LOG_I << "trainning objective: " + std::to_string(solu_->obj);
-    }
-    evaluate(data_, model_, solu_);    
-}
-
 void job_runner() {
     data* data_ = new data;
     model* model_ = new model;
@@ -1473,7 +1431,7 @@ void job_runner() {
 
 void init() {
     if (husky::Context::get_param("is_sparse") == "true") {
-        job_runner();
+        run_bqo_svm();
     } else {
         husky::LOG_I << "Dense data format is not supported";
     }
