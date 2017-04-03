@@ -983,7 +983,10 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
         nloop++;
 
         double old_obj = obj;
-        husky::LOG_I << "[outer loop: " + std::to_string(nloop) + "][old_obj]: " + std::to_string(old_obj);
+        if(data_->tid == 0)
+        {
+            husky::LOG_I << "[outer loop: " + std::to_string(nloop) + "][old_obj]: " + std::to_string(old_obj);
+        }
 
         model* new_model = new model(model_);
 
@@ -1055,7 +1058,10 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
 
             while (cost_max < cost_min) 
             {
-                husky::LOG_I << "[inner loop][cost_max]: " + std::to_string(cost_max);
+                if (data_->tid)
+                {
+                    husky::LOG_I << "[inner loop][cost_max]: " + std::to_string(cost_max);
+                }
 
                 for(i = 0; i < n_kernel; i++)
                 {
@@ -1156,10 +1162,15 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
             solu* tmp_ls_solu_2 = new solu(l, n, B, n_kernel);
 
             int step_loop = 0;
-            while ((step_max - step_min) > 1e-1 * fabs(delta_max) && step_max > 1e-12) {
-                husky::LOG_I << "[line_search] iteration: " + std::to_string(step_loop);
+            while ((step_max - step_min) > 1e-1 * fabs(delta_max) && step_max > 1e-12) 
+            {
+                if (data_->tid == 0)
+                {
+                    husky::LOG_I << "[line_search] iteration: " + std::to_string(step_loop);
+                }
                 step_loop += 1;
-                if (step_loop > 8) {
+                if (step_loop > 8) 
+                {
                     break;
                 }
                 double step_medr = step_min + (step_max - step_min) / gold_ratio;
@@ -1326,7 +1337,10 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
             }
         }
 
-        husky::LOG_I << "min_grad: " + std::to_string(min_grad) + ", max_grad: " + std::to_string(max_grad);
+        if (data_->tid == 0)
+        {
+            husky::LOG_I << "min_grad: " + std::to_string(min_grad) + ", max_grad: " + std::to_string(max_grad);
+        }
         double KKTconstraint = fabs(min_grad - max_grad) / fabs(min_grad);
         // note we find min idx in grad, corresponding to max idx in -grad
 
@@ -1349,8 +1363,11 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
         double tmp_sum = et_alpha_agg.get_value();
 
         double dual_gap = (solu_->obj + max_tmp - tmp_sum) / solu_->obj;
-        husky::LOG_I << "[outer loop][dual_gap]: " + std::to_string(fabs(dual_gap));
-        husky::LOG_I << "[outer loop][KKTconstraint]: " + std::to_string(KKTconstraint);
+        if (data_->tid == 0)
+        {
+            husky::LOG_I << "[outer loop][dual_gap]: " + std::to_string(fabs(dual_gap));
+            husky::LOG_I << "[outer loop][KKTconstraint]: " + std::to_string(KKTconstraint);
+        }
         if (KKTconstraint < 0.05 || fabs(dual_gap) < 0.01) {
             loop = 0;
         }
@@ -1507,7 +1524,7 @@ void job_runner()
 void init() {
     if (husky::Context::get_param("is_sparse") == "true") 
     {
-        run_bqo_svm();
+        job_runner();
     } 
     else 
     {
