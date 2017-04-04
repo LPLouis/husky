@@ -398,8 +398,10 @@ void initialize(data* data_, model* model_)
     }
     data_->norm = norm;
 
-    if (l != 0) {
+    if (l != 0) 
+    {
         husky::LOG_I << "Worker " + std::to_string(data_->tid) + " holds sample [" + std::to_string(index_low) + ", " + std::to_string(index_high) + ")";
+        husky::LOG_I << "Worker " + std::to_string(data_->tid) + " holds " + std::to_string(l) + " sample ";
     }
 
     if (tid == 0) {
@@ -709,6 +711,7 @@ void bqo_svm(data* data_, model* model_, solu* output_solu_, solu* input_solu_ =
         // alpha_orig = alpha;
         w_inc_square = 0;
         w_dot_w_inc = 0;
+
         if (iter_out == 0)
         {
             sum_alpha_inc_org = 0;
@@ -735,7 +738,8 @@ void bqo_svm(data* data_, model* model_, solu* output_solu_, solu* input_solu_ =
         inn_iter = 0;
         while (inn_iter < max_inn_iter) 
         {
-            for (k = 0; k < l; k++) {
+            for (k = 0; k < l; k++) 
+            {
                 i = index[k];
                 double yi = train_set_data[i].y;
 
@@ -811,6 +815,7 @@ void bqo_svm(data* data_, model* model_, solu* output_solu_, solu* input_solu_ =
                 max_step = std::min(max_step, - alpha_orig[i] / alpha_inc[i]);
             }
         }
+        husky::LOG_I << "max_step before: " + std::to_string(max_step);
         eta_agg.update(max_step);
         int wsp_size = n_kernel * B;
         for (i = 0; i < n_kernel * B; i++) 
@@ -824,6 +829,7 @@ void bqo_svm(data* data_, model* model_, solu* output_solu_, solu* input_solu_ =
         AggregatorFactory::sync();
 
         max_step = eta_agg.get_value();
+        husky::LOG_I << "max_step: " + std::to_string(max_step);
         const auto& tmp_wsp = param_list.get_all_param();
         for (i = 0; i < n_kernel * B; i++)
         {
@@ -832,6 +838,7 @@ void bqo_svm(data* data_, model* model_, solu* output_solu_, solu* input_solu_ =
         sum_alpha_inc = tmp_wsp[wsp_size];
         alpha_inc_square = tmp_wsp[wsp_size + 1];
         alpha_inc_dot_alpha = tmp_wsp[wsp_size + 2];
+        husky::LOG_I << "sum_alpha_inc: " + std::to_string(sum_alpha_inc) + ", alpha_inc_square: " + std::to_string(alpha_inc_square) + ", alpha_inc_dot_alpha" + std::to_string(alpha_inc_dot_alpha);
 
         for (i = 0; i < n_kernel; i++) 
         {
@@ -848,6 +855,7 @@ void bqo_svm(data* data_, model* model_, solu* output_solu_, solu* input_solu_ =
             // w_inc_square += mu_set[i] * vector_operator::self_dot_product(&delta_wsp[i * B], B);
             // w_dot_w_inc += mu_set[i] * vector_operator::dot_product(&wsp_orig[i * B], &delta_wsp[i * B], B);
         }
+        husky::LOG_I << "w_inc_square: " + std::to_string(w_inc_square) + ", w_dot_w_inc: " + std::to_string(w_dot_w_inc);
 
         grad_alpha_inc = w_dot_w_inc + alpha_inc_dot_alpha - sum_alpha_inc;
         if (grad_alpha_inc >= 0) 
@@ -1946,7 +1954,10 @@ void job_runner()
         {
             dt = most_violated(data_, model_, solu_);
         }
-        vector_operator::show(dt, model_->B, "dt");
+        if (data_->tid == 0)
+        {
+            vector_operator::show(dt, model_->B, "dt");
+        }
         cache_xsp(data_, model_, dt, model_->B);
         if (data_->tid == 0)
         {
@@ -2002,7 +2013,7 @@ void job_runner()
 void init() {
     if (husky::Context::get_param("is_sparse") == "true") 
     {
-        job_runner();
+        run_bqo_svm();
     } 
     else 
     {

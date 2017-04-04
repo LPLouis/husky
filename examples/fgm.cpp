@@ -88,7 +88,7 @@ using ObjT = husky::lib::ml::LabeledPointHObj<double, double, true>;
 #define EQUAL_VALUE(a, b) (a - b < 1.0e-12) && (a - b > -1.0e-12)
 #define NOT_EQUAL(a, b) (a - b > 1.0e-12) || (a - b < -1.0e-12)
 #define INF std::numeric_limits<double>::max()
-#define EPS 1.0e-1
+#define EPS 1.0e-2
 #define MAX_NUM_KERNEL 10
 
 struct feature_node
@@ -525,9 +525,6 @@ void cache_xsp(data* data_, model* model_, int *dt, int B)
     int n_kernel = model_->n_kernel;
     auto& train_set_data = data_->train_set->get_data();
 
-    // normalize ?
-    double* norm = data_->norm;
-
     // cache new kernel
     data_->xsp[n_kernel] = new feature_node*[l];
     for (i = 0; i < l; i++)
@@ -623,7 +620,7 @@ void dcd_svm(data* data_, model* model_, solu* output_solu_, solu* input_solu_ =
             QD[i] = 0;
             for (k = 0; k < n_kernel; k++) 
             {
-                feature_node* x = xsp[i][k];
+                feature_node* x = xsp[k][i];
                 double tmp = 0;
                 while (x->index != -1)
                 {
