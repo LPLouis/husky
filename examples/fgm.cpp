@@ -405,17 +405,18 @@ void initialize(data* data_, model* model_)
     model_->max_inn_iter = std::stoi(husky::Context::get_param("max_inn_iter"));
 
     auto& train_set_data = train_set.get_data();
+    // uncomment the following if bias is needed (note we will train the bias instead of obtaining it after w is solved for sake of simplicity)
+    // for (auto& labeled_point : train_set_data) {
+    //     labeled_point.x.resize(n + 1);
+    //     labeled_point.x.set(n, 1);
+    // }
+    // for (auto& labeled_point : test_set.get_data()) {
+    //     labeled_point.x.resize(n + 1);
+    //     labeled_point.x.set(n, 1);
+    // }
 
-    for (auto& labeled_point : train_set_data) {
-        labeled_point.x.resize(n + 1);
-        labeled_point.x.set(n, 1);
-    }
-    for (auto& labeled_point : test_set.get_data()) {
-        labeled_point.x.resize(n + 1);
-        labeled_point.x.set(n, 1);
-    }
+    // n += 1;
 
-    n += 1;
     int l = train_set_data.size();
     data_->n = n;
     data_->l = l;
@@ -787,7 +788,7 @@ void dcd_svm(data* data_, model* model_, solu* output_solu_, solu* input_solu_ =
 // this function assumes mu_set, wsp and alpha are newed
 void fast_dcd_svm(data* data_, model* model_, double* mu_set, double* wsp, double* alpha, double* obj_, double* QD = NULL, int* index = NULL, bool cache = false)
 {
-    // clock_t begin = clock();
+    // clock_t start = clock();
     // Declaration and Initialization
 
     int l = data_->l;
@@ -977,15 +978,55 @@ void fast_dcd_svm(data* data_, model* model_, double* mu_set, double* wsp, doubl
         obj -= 0.5 * mu_set[i] * tmp;
     }
 
+    double primal = 0;
+    for (i = 0; i < n_kernel; i++)
+    {
+        tmp = 0;
+        double *wsp_tmp_ptr = &wsp[i * B];
+        for (j = 0; j < B; j++)
+        {
+            tmp += wsp_tmp_ptr[j] * wsp_tmp_ptr[j];
+        }
+        primal += 0.5 * mu_set[i] * tmp;
+    }
+    for (i = 0; i < l; i++)
+    {
+        double yi = train_set_data[i].y;
+        double loss = 0;
+        for (j = 0; j < n_kernel; j++) 
+        {
+            tmp = 0;
+            double* tmp_wsp = &wsp[j * B];
+            feature_node* x = xsp[j][i];
+            while (x->index != -1)
+            {
+                tmp += tmp_wsp[x->index] * x->value;
+                x++;
+            }
+            loss += mu_set[j] * tmp;
+            // loss += mu_set[j] * vector_operator::dot_product(&wsp[j * B], xsp[j][i], B);
+        }
+        loss *= yi * -1;
+        loss += 1;
+        // loss = 1 - labeled_point.y * w.dot(labeled_point.x);
+        if (loss > 0) 
+        {
+            // l2 loss
+            primal += C * loss * loss;
+        }
+    }
+
+    *obj_ = primal;
+
     if (!cache) 
     {
         delete[] index;
         delete[] QD;
     }
-    *obj_ = obj;
+    // *obj_ = obj;
 
     // clock_t end = clock();
-    // double time_spent = (double)(end - begin) / CLOCKS_PER_SEC;
+    // double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
     // husky::LOG_I << "time elapsed: " + std::to_string(time_spent);
 }
 
@@ -1492,7 +1533,7 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
     delete [] grad;
 }
 
-void evaluate(data* data_, model* model_, solu* solu_) 
+double evaluate(data* data_, model* model_, solu* solu_) 
 {
     int i, j;
     int n = data_->n;
@@ -1545,6 +1586,7 @@ void evaluate(data* data_, model* model_, solu* solu_)
                     std::to_string(1.0 - static_cast<double>(error_agg) / test_set_data.size());  
 
     delete [] w;
+    return 1.0 - static_cast<double>(error_agg) / test_set_data.size();
 }
 
 void run_dcd_svm() 
@@ -1583,16 +1625,20 @@ void job_runner()
 
     initialize(data_, model_);
 
-    int iter = 1;
+    double *kernel_acc = new double[MAX_NUM_KERNEL];
+    double *kernel_time = new double[MAX_NUM_KERNEL];
+
+    int iter = 0;
     int max_out_iter = model_->max_out_iter;
     double mkl_obj = INF;
     double last_obj = INF;
     double obj_diff = 0.0;
     int *dt;
-    while(iter <= max_out_iter) 
+    while(iter < max_out_iter) 
     {
+        clock_t start = clock();
         last_obj = mkl_obj;
-        if (iter == 1) 
+        if (iter == 0) 
         {
             dt = most_violated(data_, model_);
         } 
@@ -1601,12 +1647,13 @@ void job_runner()
             dt = most_violated(data_, model_, solu_);
         }
 
-        // if (vector_operator::element_at(dt, model_->dt_set, model_->n_kernel, model_->B))
-        // {
-        //     husky::LOG_I << "element_at: FGM converged";
-        //     delete [] dt;
-        //     break;
-        // }
+        if (vector_operator::element_at(dt, model_->dt_set, model_->n_kernel, model_->B))
+        {
+            husky::LOG_I << "element_at: FGM converged";
+            delete [] dt;
+            break;
+        }
+        vector_operator::show(dt, model_->B, "dt");
         cache_xsp(data_, model_, dt, model_->B);
         husky::LOG_I << "cache completed! number of kernel: " + std::to_string(model_->n_kernel);
         if (solu_->wsp == NULL && solu_->alpha == NULL)
@@ -1623,24 +1670,57 @@ void job_runner()
         }
         // warm_set_model(data_, model_);
         simpleMKL(data_, model_, solu_);
+        clock_t end = clock();
+        kernel_time[iter] = (double)(end - start) / CLOCKS_PER_SEC;
+        kernel_acc[iter] = evaluate(data_, model_, solu_);
         mkl_obj = solu_->obj;
         obj_diff = fabs(mkl_obj - last_obj);
         husky::LOG_I << "[iteration " + std::to_string(iter) + "][mkl_obj " + std::to_string(mkl_obj) + "][obj_diff " + std::to_string(obj_diff) + "]";
         vector_operator::show(model_->mu_set, model_->n_kernel, "mu_set");
-        if (obj_diff < 0.001 * abs(last_obj)) 
+        if (mkl_obj > last_obj)
         {
             husky::LOG_I << "FGM converged";
             break;
         }
-        if (model_->mu_set[iter - 1] < 0.0001) 
+        if (obj_diff < 0.0001 * abs(last_obj)) 
+        {
+            husky::LOG_I << "FGM converged";
+            break;
+        }
+        if (model_->mu_set[iter] < 0.001) 
         {
             husky::LOG_I << "FGM converged";
             break;
         }
         iter++;
-        evaluate(data_, model_, solu_);
     }
     vector_operator::show(model_->mu_set, model_->n_kernel, "mu_set");
+    int** dt_set = model_->dt_set;
+    // FILE* dout = fopen("fgm_syn_large_dt", "w");
+    FILE* dout = fopen("fgm_gen_features_dt", "w");
+    for (int i = 0; i <= iter; i++)
+    {
+        for (int j = 0; j < model_->B; j++)
+        {
+            fprintf(dout, "%d ", dt_set[i][j]);
+        }
+        fprintf(dout, "\n");
+    }
+
+    // FILE* fout = fopen("fgm_syn_large_plot.csv", "w");
+    FILE* fout = fopen("fgm_gen_features_plot.csv", "w");
+    fprintf(fout, "x(n_kernel),y(accuracy) ");
+    for (int i = 0; i <= iter; i++)
+    {
+        fprintf(fout, "%f ", kernel_acc[i]);
+    }
+    fprintf(fout, "\n");
+    fprintf(fout, "x(n_kernel),y(time) ");
+    for (int i = 0; i <= iter; i++)
+    {
+        fprintf(fout, "%f ", kernel_time[i]);
+    }
+    fprintf(fout, "\n");
     evaluate(data_, model_, solu_);
     destroy(data_, model_, solu_);
 }
