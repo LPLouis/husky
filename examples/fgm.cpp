@@ -89,7 +89,7 @@ using ObjT = husky::lib::ml::LabeledPointHObj<double, double, true>;
 #define NOT_EQUAL(a, b) (a - b > 1.0e-12) || (a - b < -1.0e-12)
 #define INF std::numeric_limits<double>::max()
 #define EPS 1.0e-2
-#define MAX_NUM_KERNEL 10
+#define MAX_NUM_KERNEL 20
 
 struct feature_node
 {
@@ -495,7 +495,14 @@ int* most_violated(data* data_, model* model_, solu* solu_ = NULL)
     double* norm = data_->norm;
     for (i = 0; i < data_->n; i++) 
     {
-        fea_score.push_back(std::make_pair(i, fabs(w[i]) / norm[i]));
+        if (norm[i] == 0)
+        {
+            fea_score.push_back(std::make_pair(i, 0));
+        }
+        else
+        {
+            fea_score.push_back(std::make_pair(i, fabs(w[i]) / norm[i]));
+        }
     }
     std::sort(fea_score.begin(), fea_score.end(), [](auto& left, auto& right) {
         return left.second > right.second;
@@ -1036,7 +1043,7 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
     int nloop, loop, maxloop;
     nloop = 1;
     loop = 1;
-    maxloop = 4;
+    maxloop = 12;
     double tmp;
 
     const int l = data_->l;   
@@ -1625,8 +1632,14 @@ void job_runner()
 
     initialize(data_, model_);
 
+    // double *kernel_acc = new double[MAX_NUM_KERNEL];
+    // double *kernel_time = new double[MAX_NUM_KERNEL];
+
     double *kernel_acc = new double[MAX_NUM_KERNEL];
-    double *kernel_time = new double[MAX_NUM_KERNEL];
+    double *kernel_violated_time = new double[MAX_NUM_KERNEL];
+    double *kernel_cache_time = new double[MAX_NUM_KERNEL];
+    double *kernel_train_time = new double[MAX_NUM_KERNEL];
+
 
     int iter = 0;
     int max_out_iter = model_->max_out_iter;
@@ -1634,9 +1647,11 @@ void job_runner()
     double last_obj = INF;
     double obj_diff = 0.0;
     int *dt;
+
+    clock_t start, end;
     while(iter < max_out_iter) 
     {
-        clock_t start = clock();
+        start = clock();
         last_obj = mkl_obj;
         if (iter == 0) 
         {
@@ -1646,15 +1661,20 @@ void job_runner()
         {
             dt = most_violated(data_, model_, solu_);
         }
+        end = clock();
+        kernel_violated_time[iter] = (double)(end - start) / CLOCKS_PER_SEC;
 
-        if (vector_operator::element_at(dt, model_->dt_set, model_->n_kernel, model_->B))
-        {
-            husky::LOG_I << "element_at: FGM converged";
-            delete [] dt;
-            break;
-        }
+        // if (vector_operator::element_at(dt, model_->dt_set, model_->n_kernel, model_->B))
+        // {
+        //     husky::LOG_I << "element_at: FGM converged";
+        //     delete [] dt;
+        //     break;
+        // }
         vector_operator::show(dt, model_->B, "dt");
+        start = clock();
         cache_xsp(data_, model_, dt, model_->B);
+        end = clock();
+        kernel_cache_time[iter] = (double)(end - start) / CLOCKS_PER_SEC;
         husky::LOG_I << "cache completed! number of kernel: " + std::to_string(model_->n_kernel);
         if (solu_->wsp == NULL && solu_->alpha == NULL)
         {
@@ -1668,36 +1688,42 @@ void job_runner()
             solu_->wsp = new double[model_->n_kernel * model_->B];
             solu_->alpha = new double[data_->l];            
         }
+        start = clock();
         // warm_set_model(data_, model_);
         simpleMKL(data_, model_, solu_);
-        clock_t end = clock();
-        kernel_time[iter] = (double)(end - start) / CLOCKS_PER_SEC;
+        end = clock();
+        kernel_train_time[iter] = (double)(end - start) / CLOCKS_PER_SEC;
         kernel_acc[iter] = evaluate(data_, model_, solu_);
+
         mkl_obj = solu_->obj;
         obj_diff = fabs(mkl_obj - last_obj);
         husky::LOG_I << "[iteration " + std::to_string(iter) + "][mkl_obj " + std::to_string(mkl_obj) + "][obj_diff " + std::to_string(obj_diff) + "]";
         vector_operator::show(model_->mu_set, model_->n_kernel, "mu_set");
-        if (mkl_obj > last_obj)
-        {
-            husky::LOG_I << "FGM converged";
-            break;
-        }
-        if (obj_diff < 0.0001 * abs(last_obj)) 
-        {
-            husky::LOG_I << "FGM converged";
-            break;
-        }
-        if (model_->mu_set[iter] < 0.001) 
-        {
-            husky::LOG_I << "FGM converged";
-            break;
-        }
+        // if (mkl_obj > last_obj)
+        // {
+        //     husky::LOG_I << "mkl_obj > last_obj: FGM converged";
+        //     break;
+        // }
+        // if (obj_diff < 0.0001 * abs(last_obj)) 
+        // {
+        //     husky::LOG_I << "obj_diff < 0.001 * abs(last_obj): FGM converged";
+        //     break;
+        // }
+        // if (model_->mu_set[iter] < 0.0001) 
+        // {
+        //     husky::LOG_I << "model_->mu_set[iter] < 0.0001: FGM converged";
+        //     break;
+        // }
         iter++;
+    }
+    if (iter == max_out_iter)
+    {
+        iter = max_out_iter - 1;
     }
     vector_operator::show(model_->mu_set, model_->n_kernel, "mu_set");
     int** dt_set = model_->dt_set;
-    // FILE* dout = fopen("fgm_syn_large_dt", "w");
-    FILE* dout = fopen("fgm_gen_features_dt", "w");
+
+    FILE* dout = fopen("fgm_url_dt", "w");
     for (int i = 0; i <= iter; i++)
     {
         for (int j = 0; j < model_->B; j++)
@@ -1708,19 +1734,43 @@ void job_runner()
     }
 
     // FILE* fout = fopen("fgm_syn_large_plot.csv", "w");
-    FILE* fout = fopen("fgm_gen_features_plot.csv", "w");
-    fprintf(fout, "x(n_kernel),y(accuracy) ");
+    FILE* fout = fopen("fgm_url_plot.csv", "w");
+    fprintf(fout, "n_kernel.Vs.accuracy ");
     for (int i = 0; i <= iter; i++)
     {
         fprintf(fout, "%f ", kernel_acc[i]);
     }
     fprintf(fout, "\n");
-    fprintf(fout, "x(n_kernel),y(time) ");
+    fprintf(fout, "n_kernel.Vs.violated_time ");
     for (int i = 0; i <= iter; i++)
     {
-        fprintf(fout, "%f ", kernel_time[i]);
+        fprintf(fout, "%f ", kernel_violated_time[i]);
     }
     fprintf(fout, "\n");
+    fprintf(fout, "n_kernel.Vs.cache_time ");
+    for (int i = 0; i <= iter; i++)
+    {
+        fprintf(fout, "%f ", kernel_cache_time[i]);
+    }
+    fprintf(fout, "\n");
+    fprintf(fout, "n_kernel.Vs.train_time ");
+    for (int i = 0; i <= iter; i++)
+    {
+        fprintf(fout, "%f ", kernel_train_time[i]);
+    }
+    fprintf(fout, "\n");
+    fprintf(fout, "mu_set ");
+    for (int i = 0; i <= iter; i++)
+    {
+        fprintf(fout, "%f ", model_->mu_set[i]);
+    }
+    fprintf(fout, "\n");
+
+    delete [] kernel_acc;
+    delete [] kernel_violated_time;
+    delete [] kernel_cache_time;
+    delete [] kernel_train_time;
+
     evaluate(data_, model_, solu_);
     destroy(data_, model_, solu_);
 }
