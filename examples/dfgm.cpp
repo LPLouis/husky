@@ -1358,6 +1358,7 @@ void fast_bqo_svm(data* data_, model* model_, double* mu_set, double* wsp, doubl
     if (data_->tid == 0)
     {
         husky::LOG_I << "BQO_SVM, time elapsed: " + std::to_string((double)(end - start) / CLOCKS_PER_SEC);
+        husky::LOG_I << "BQO_SVM, out iter: " + std::to_string(iter_out);
     }
 }
 
@@ -1785,6 +1786,7 @@ void fast_bqo_svm_cache(data* data_, model* model_, double* mu_set, double* wsp,
     if (data_->tid == 0)
     {
         husky::LOG_I << "BQO_SVM, time elapsed: " + std::to_string((double)(end - start) / CLOCKS_PER_SEC);
+        husky::LOG_I << "BQO_SVM, out_iter: " + std::to_string(iter_out);
     }
 }
 
@@ -2525,7 +2527,7 @@ void job_runner()
     if (data_->tid == 0)
     {
         int** dt_set = model_->dt_set;
-        FILE* dout = fopen("dfgm_url_dt", "w");
+        FILE* dout = fopen("dfgm_rcv1_dt", "w");
         for (int i = 0; i <= iter; i++)
         {
             for (int j = 0; j < model_->B; j++)
@@ -2536,7 +2538,7 @@ void job_runner()
         }
 
         // FILE* fout = fopen("fgm_syn_large_plot.csv", "w");
-        FILE* fout = fopen("dfgm_url_plot.csv", "w");
+        FILE* fout = fopen("dfgm_rcv1_plot.csv", "w");
         fprintf(fout, "n_kernel.Vs.accuracy ");
         for (int i = 0; i <= iter; i++)
         {

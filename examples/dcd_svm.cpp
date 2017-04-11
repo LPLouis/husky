@@ -341,6 +341,7 @@ solution* dcd_svm_shrink_l2(problem* problem_) {
             obj += alpha[i] * (alpha[i] * diag + 2 * beta[i]);
         }
         obj /= 2;
+        husky::LOG_I << "iteration: " + std::to_string (iter) + ", objective: " + std::to_string(obj);
     }
 
     delete[] index;
@@ -380,14 +381,14 @@ void job_runner() {
 
     initialize(problem_);
 
-    solution* ret1 = dcd_svm_no_shrink_l2(problem_);
-    evaluate(problem_, ret1);
+    // solution* ret1 = dcd_svm_no_shrink_l2(problem_);
+    // evaluate(problem_, ret1);
 
     solution* ret2 = dcd_svm_shrink_l2(problem_);
     evaluate(problem_, ret2);
 
     delete problem_;
-    delete ret1;
+    // delete ret1;
     delete ret2;
 }
 

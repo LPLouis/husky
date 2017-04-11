@@ -795,7 +795,7 @@ void dcd_svm(data* data_, model* model_, solu* output_solu_, solu* input_solu_ =
 // this function assumes mu_set, wsp and alpha are newed
 void fast_dcd_svm(data* data_, model* model_, double* mu_set, double* wsp, double* alpha, double* obj_, double* QD = NULL, int* index = NULL, bool cache = false)
 {
-    // clock_t start = clock();
+    clock_t start = clock();
     // Declaration and Initialization
 
     int l = data_->l;
@@ -1032,18 +1032,20 @@ void fast_dcd_svm(data* data_, model* model_, double* mu_set, double* wsp, doubl
     }
     // *obj_ = obj;
 
-    // clock_t end = clock();
-    // double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
-    // husky::LOG_I << "time elapsed: " + std::to_string(time_spent);
+    clock_t end = clock();
+    double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
+    husky::LOG_I << "DCD_SVM: time elapsed: " + std::to_string(time_spent);
+    husky::LOG_I << "DCD_SVM: inn_iter: " + std::to_string(iter);
 }
 
 void simpleMKL(data* data_, model* model_, solu* solu_) 
 {
+    clock_t start = clock();
     int i, j, k;
     int nloop, loop, maxloop;
     nloop = 1;
     loop = 1;
-    maxloop = 12;
+    maxloop = 4;
     double tmp;
 
     const int l = data_->l;   
@@ -1538,6 +1540,8 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
     }
 
     delete [] grad;
+    clock_t end = clock();
+    husky::LOG_I << "time elapsed " + std::to_string((double)(end - start) / CLOCKS_PER_SEC);
 }
 
 double evaluate(data* data_, model* model_, solu* solu_) 
@@ -1723,7 +1727,7 @@ void job_runner()
     vector_operator::show(model_->mu_set, model_->n_kernel, "mu_set");
     int** dt_set = model_->dt_set;
 
-    FILE* dout = fopen("fgm_url_dt", "w");
+    FILE* dout = fopen("fgm_rcv1_dt", "w");
     for (int i = 0; i <= iter; i++)
     {
         for (int j = 0; j < model_->B; j++)
@@ -1734,7 +1738,7 @@ void job_runner()
     }
 
     // FILE* fout = fopen("fgm_syn_large_plot.csv", "w");
-    FILE* fout = fopen("fgm_url_plot.csv", "w");
+    FILE* fout = fopen("fgm_rcv1_plot.csv", "w");
     fprintf(fout, "n_kernel.Vs.accuracy ");
     for (int i = 0; i <= iter; i++)
     {
