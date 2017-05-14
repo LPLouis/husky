@@ -2,17 +2,33 @@
     Performance discussion:
     1. Underlying implementation of the DenseVector class and SparseVector class.
     2. Representation of the problem , solution w and alpha
-        => Right now I am using DenseVector for both w and alpha, which is not going to work well if the problem is really of high dimensional
-        => Alternatively I can also use SparseVector for w, but this creates a problem when we try to implement it in a distributed manner because the ParameterServer in Husky accepts a DenseVector, though this problem can be resolved by mapping SparseIndex to DenseIndex. But this seems too much of a burden on the programmer's side
-        => In the original FGM implementation, they actually cache the kernel X_tX_t^T for every dt! This idea seems implausible and crazy to me at first and I am supprised that they actually take this approach for faster speed
+        => Right now I am using DenseVector for both w and alpha, which is not going to work well if the problem is
+really of high dimensional
+        => Alternatively I can also use SparseVector for w, but this creates a problem when we try to implement it in a
+distributed manner because the ParameterServer in Husky accepts a DenseVector, though this problem can be resolved by
+mapping SparseIndex to DenseIndex. But this seems too much of a burden on the programmer's side
+        => In the original FGM implementation, they actually cache the kernel X_tX_t^T for every dt! This idea seems
+implausible and crazy to me at first and I am supprised that they actually take this approach for faster speed
     3. Analysis of the parameter B
-        => When I try the FGM algorithm (the one i implemented) on the a9 dataset available on LIBSVM website, I foudn that if we set B to be 5, 10, 20, or anything less than 100, then the FGM algorithm will actually converge after the first iteration, i.e., after solving the problem with one violated constraint, it still generates the same constraint in the next iteration. I think this may be a good sign that this algorithm is not suitable for this dataset in the sense that although some features may have high violated coefficient (maybe because its features are categorical?), they may not have enough discriminative power. Interestingly, I try using about 20 features (124 in total), which gives accuracies of only 12%. If you do the math, if all features are equally important, then having 20 features should give you 16% accuracy. So is this a good sign that most violated constraint is not a good criterion for selecting features, though intuitively it looks good (coeff of w)? Or is it all just because the features of this dataset are cetegorical?
-    4. Design decison 
-        => What should SparseVector + SparseVector equal to ? DenseVector or SparseVector, is differentiating these only during run time a good idea?
+        => When I try the FGM algorithm (the one i implemented) on the a9 dataset available on LIBSVM website, I foudn
+that if we set B to be 5, 10, 20, or anything less than 100, then the FGM algorithm will actually converge after the
+first iteration, i.e., after solving the problem with one violated constraint, it still generates the same constraint in
+the next iteration. I think this may be a good sign that this algorithm is not suitable for this dataset in the sense
+that although some features may have high violated coefficient (maybe because its features are categorical?), they may
+not have enough discriminative power. Interestingly, I try using about 20 features (124 in total), which gives
+accuracies of only 12%. If you do the math, if all features are equally important, then having 20 features should give
+you 16% accuracy. So is this a good sign that most violated constraint is not a good criterion for selecting features,
+though intuitively it looks good (coeff of w)? Or is it all just because the features of this dataset are cetegorical?
+    4. Design decison
+        => What should SparseVector + SparseVector equal to ? DenseVector or SparseVector, is differentiating these only
+during run time a good idea?
     5. Implementation
         => Actually self_dot_elem_wise_dot can be switched back to the original version using combined control variable
-        => in the actual FGM implementation by Tan Mingkui, they actually do not use the convergence criterion d_k+1 \in C_k. Instead, they use the difference of objective (whether it is smaller than epsion) and the values of the newly add mu_set (whether it is less than 1e-3).
-        => Also i realized that we actually do not need to split the data featurewise since we need to compute global w anyway
+        => in the actual FGM implementation by Tan Mingkui, they actually do not use the convergence criterion d_k+1 \in
+C_k. Instead, they use the difference of objective (whether it is smaller than epsion) and the values of the newly add
+mu_set (whether it is less than 1e-3).
+        => Also i realized that we actually do not need to split the data featurewise since we need to compute global w
+anyway
 
 
     This implementation uses sparse xsp where each x is of dimension B
@@ -26,7 +42,6 @@
     next: instead of letting each x have a fixed dimension of B, use feature node notation
 
 ***/
-
 
 /***
 
@@ -91,60 +106,49 @@ using ObjT = husky::lib::ml::LabeledPointHObj<double, double, true>;
 #define EPS 1.0e-2
 #define MAX_NUM_KERNEL 20
 
-struct feature_node
-{
+struct feature_node {
     int index;  // index of the feature inside wsp, inside the range of [0, B)
     double value;
 };
 
-class data 
-{
-public:
-    int n;          // number of features (appended 1 included)
-    int l;         
+class data {
+   public:
+    int n;  // number of features (appended 1 included)
+    int l;
     husky::ObjList<ObjT>* train_set;
     husky::ObjList<ObjT>* test_set;
     feature_node*** xsp;
-    double *norm;
+    double* norm;
 
-    data()
-    {
-        xsp = new feature_node**[MAX_NUM_KERNEL];
-    }
+    data() { xsp = new feature_node**[MAX_NUM_KERNEL]; }
 
-    ~data()
-    {
-        if (xsp != NULL)
-        {
-            delete [] xsp;
+    ~data() {
+        if (xsp != NULL) {
+            delete[] xsp;
         }
-        if (norm != NULL)
-        {
-            delete [] norm;
+        if (norm != NULL) {
+            delete[] norm;
         }
     }
 };
 
-class model 
-{
-public:
+class model {
+   public:
     int B;
     double C;
     int n_kernel;
     int max_out_iter;
     int max_inn_iter;
-    double *mu_set;
+    double* mu_set;
     int** dt_set;
 
-    model()
-    {
+    model() {
         n_kernel = 0;
         mu_set = new double[MAX_NUM_KERNEL];
         dt_set = new int*[MAX_NUM_KERNEL];
     }
 
-    model(const model* m)
-    {
+    model(const model* m) {
         int i, j;
         B = m->B;
         C = m->C;
@@ -152,84 +156,65 @@ public:
         max_inn_iter = m->max_inn_iter;
         n_kernel = m->n_kernel;
         mu_set = new double[MAX_NUM_KERNEL];
-        for (i = 0; i < n_kernel; i++)
-        {
+        for (i = 0; i < n_kernel; i++) {
             mu_set[i] = m->mu_set[i];
         }
         dt_set = new int*[MAX_NUM_KERNEL];
-        for (i = 0; i < n_kernel; i++)
-        {
+        for (i = 0; i < n_kernel; i++) {
             dt_set[i] = new int[B];
-            for (j = 0; j < B; j++)
-            {
+            for (j = 0; j < B; j++) {
                 dt_set[i][j] = m->dt_set[i][j];
             }
         }
     }
 
-    void add_dt(int *dt, int B)
-    {
+    void add_dt(int* dt, int B) {
         assert(n_kernel <= MAX_NUM_KERNEL && "n_kernel exceeds MAX_NUM_KERNEL");
         dt_set[n_kernel] = dt;
         n_kernel += 1;
         std::fill_n(mu_set, n_kernel, 1.0 / n_kernel);
     }
 
-    ~model()
-    {
-        if (mu_set != NULL)
-        {
-            delete [] mu_set;
+    ~model() {
+        if (mu_set != NULL) {
+            delete[] mu_set;
         }
-        if (dt_set != NULL)
-        {
-            for (int i = 0; i < n_kernel; i++)
-            {
-                delete [] dt_set[i];
+        if (dt_set != NULL) {
+            for (int i = 0; i < n_kernel; i++) {
+                delete[] dt_set[i];
             }
-            delete [] dt_set;
+            delete[] dt_set;
         }
     }
-
 };
 
-class solu 
-{
-public:
+class solu {
+   public:
     double obj;
-    double *alpha;
-    double *wsp;
+    double* alpha;
+    double* wsp;
 
-    solu() 
-    {
+    solu() {
         alpha = NULL;
         wsp = NULL;
     }
 
-    ~solu()
-    {
-        if (alpha != NULL)
-        {
-            delete [] alpha;
+    ~solu() {
+        if (alpha != NULL) {
+            delete[] alpha;
         }
-        if (wsp != NULL)
-        {
-            delete [] wsp;
+        if (wsp != NULL) {
+            delete[] wsp;
         }
     }
 };
 
-class vector_operator 
-{
-public:
-
-    static bool sparse_equal(int* dt, int* v, int B)
-    {
+class vector_operator {
+   public:
+    static bool sparse_equal(int* dt, int* v, int B) {
         bool flag = true;
-        for (int i = 0; i < B; i++)
-        {
-            if (dt[i] != v[i])
-            {
+        for (int i = 0; i < B; i++) {
+            if (dt[i] != v[i]) {
                 flag = false;
                 break;
             }
@@ -237,13 +222,10 @@ public:
         return flag;
     }
 
-    static bool element_at(int* dt, int **dt_set, int n_kernel, int B)
-    {
+    static bool element_at(int* dt, int** dt_set, int n_kernel, int B) {
         bool flag = false;
-        for (int i = 0; i < n_kernel; i++)
-        {
-            if (sparse_equal(dt, dt_set[i], B))
-            {
+        for (int i = 0; i < n_kernel; i++) {
+            if (sparse_equal(dt, dt_set[i], B)) {
                 flag = true;
                 break;
             }
@@ -251,12 +233,9 @@ public:
         return flag;
     }
 
-    static inline bool double_equals(double a, double b, double epsilon = 1.0e-6) {
-        return std::abs(a - b) < epsilon;
-    }
+    static inline bool double_equals(double a, double b, double epsilon = 1.0e-6) { return std::abs(a - b) < epsilon; }
 
-    static void show(const std::vector<double>& vec, std::string message_head) 
-    {
+    static void show(const std::vector<double>& vec, std::string message_head) {
         std::string ret = message_head;
         for (int i = 0; i < vec.size(); i++) {
             ret += ": (" + std::to_string(i + 1) + ", " + std::to_string(vec[i]) + "),";
@@ -264,17 +243,15 @@ public:
         husky::LOG_I << ret;
     }
 
-    static void show(const DenseVector<double>& vec, std::string message_head) 
-    {
+    static void show(const DenseVector<double>& vec, std::string message_head) {
         std::string ret = message_head + ": ";
         for (int i = 0; i < vec.get_feature_num(); i++) {
-            ret += std::to_string(vec[i]) + " "; 
+            ret += std::to_string(vec[i]) + " ";
         }
         husky::LOG_I << ret;
     }
 
-    static void show(const SparseVector<double>& vec, std::string message_head) 
-    {
+    static void show(const SparseVector<double>& vec, std::string message_head) {
         std::string ret = message_head + ": ";
         for (auto it = vec.begin(); it != vec.end(); it++) {
             ret += std::to_string((*it).fea) + ":" + std::to_string((*it).val) + " ";
@@ -282,21 +259,17 @@ public:
         husky::LOG_I << ret;
     }
 
-    static void show(int *dt, int B, std::string message_head)
-    {
+    static void show(int* dt, int B, std::string message_head) {
         std::string ret = message_head + ": ";
-        for (int i = 0; i < B; i++)
-        {
+        for (int i = 0; i < B; i++) {
             ret += std::to_string(i) + ":" + std::to_string(dt[i]) + " ";
         }
         husky::LOG_I << ret;
     }
 
-    static void show(double *dt, int B, std::string message_head)
-    {
+    static void show(double* dt, int B, std::string message_head) {
         std::string ret = message_head + ": ";
-        for (int i = 0; i < B; i++)
-        {
+        for (int i = 0; i < B; i++) {
             ret += std::to_string(i) + ":" + std::to_string(dt[i]) + " ";
         }
         husky::LOG_I << ret;
@@ -309,14 +282,13 @@ public:
         b = t;
     }
 
-    static void my_min(const double *vet, const int size, double *min_value, int *min_index) 
-    {
+    static void my_min(const double* vet, const int size, double* min_value, int* min_index) {
         int i;
         double tmp = vet[0];
         min_index[0] = 0;
 
-        for(i=0; i<size; i++){
-            if(vet[i] < tmp){
+        for (i = 0; i < size; i++) {
+            if (vet[i] < tmp) {
                 tmp = vet[i];
                 min_index[0] = i;
             }
@@ -324,24 +296,17 @@ public:
         min_value[0] = tmp;
     }
 
-    static void my_soft_min(const double* mu_set, const double* desc, const int n_kernel, double* step_max)
-    {
+    static void my_soft_min(const double* mu_set, const double* desc, const int n_kernel, double* step_max) {
         int i;
         int flag = 1;
-        for(i = 0; i < n_kernel; i++)
-        {
-            if(desc[i] < 0)
-            {
-                if(flag == 1)
-                {
+        for (i = 0; i < n_kernel; i++) {
+            if (desc[i] < 0) {
+                if (flag == 1) {
                     step_max[0] = -mu_set[i] / desc[i];
                     flag = 0;
-                }
-                else
-                {
+                } else {
                     double tmp = -mu_set[i] / desc[i];
-                    if (tmp < step_max[0])
-                    {
+                    if (tmp < step_max[0]) {
                         step_max[0] = tmp;
                     }
                 }
@@ -349,14 +314,13 @@ public:
         }
     }
 
-    static void my_max(const double* vet, const int size, double *max_value, int *max_index)
-    {
+    static void my_max(const double* vet, const int size, double* max_value, int* max_index) {
         int i;
         double tmp = vet[0];
         max_index[0] = 0;
 
-        for(i=0; i<size; i++){
-            if(vet[i] > tmp){
+        for (i = 0; i < size; i++) {
+            if (vet[i] > tmp) {
                 tmp = vet[i];
                 max_index[0] = i;
             }
@@ -364,13 +328,11 @@ public:
         max_value[0] = tmp;
     }
 
-    static double dot_product(const double* w, const SparseVector<double>& v, const int n)
-    {
+    static double dot_product(const double* w, const SparseVector<double>& v, const int n) {
         assert(v.get_feature_num() == n && "dot_product: error\n");
         double ret = 0;
         auto it = v.begin();
-        while(it != v.end())
-        {
+        while (it != v.end()) {
             ret += w[(*it).fea] * (*it).val;
             it++;
         }
@@ -378,8 +340,7 @@ public:
     }
 };
 
-void initialize(data* data_, model* model_) 
-{
+void initialize(data* data_, model* model_) {
     auto& train_set = husky::ObjListStore::create_objlist<ObjT>("train_set");
     auto& test_set = husky::ObjListStore::create_objlist<ObjT>("test_set");
     data_->train_set = &train_set;
@@ -397,7 +358,6 @@ void initialize(data* data_, model* model_)
     int n = husky::lib::ml::load_data(husky::Context::get_param("train"), train_set, format);
     n = std::max(n, husky::lib::ml::load_data(husky::Context::get_param("test"), test_set, format));
 
-
     // get model config parameters
     model_->B = std::stoi(husky::Context::get_param("B"));
     model_->C = std::stod(husky::Context::get_param("C"));
@@ -405,7 +365,8 @@ void initialize(data* data_, model* model_)
     model_->max_inn_iter = std::stoi(husky::Context::get_param("max_inn_iter"));
 
     auto& train_set_data = train_set.get_data();
-    // uncomment the following if bias is needed (note we will train the bias instead of obtaining it after w is solved for sake of simplicity)
+    // uncomment the following if bias is needed (note we will train the bias instead of obtaining it after w is solved
+    // for sake of simplicity)
     // for (auto& labeled_point : train_set_data) {
     //     labeled_point.x.resize(n + 1);
     //     labeled_point.x.set(n, 1);
@@ -421,19 +382,16 @@ void initialize(data* data_, model* model_)
     data_->n = n;
     data_->l = l;
 
-    double *norm = new double[n];
+    double* norm = new double[n];
     std::fill_n(norm, n, 0);
-    for (auto& labeled_point : train_set_data)
-    {
+    for (auto& labeled_point : train_set_data) {
         auto it = labeled_point.x.begin();
-        while (it != labeled_point.x.end())
-        {
+        while (it != labeled_point.x.end()) {
             norm[(*it).fea] += (*it).val * (*it).val;
             it++;
         }
     }
-    for (int i = 0; i < n; i++)
-    {
+    for (int i = 0; i < n; i++) {
         norm[i] = sqrt(norm[i]);
     }
     data_->norm = norm;
@@ -442,36 +400,29 @@ void initialize(data* data_, model* model_)
     husky::LOG_I << "number of features: " + std::to_string(n);
 }
 
-void destroy(data* data_, model* model_, solu* solu_)
-{
+void destroy(data* data_, model* model_, solu* solu_) {
     int i, j;
     int l = data_->l;
     int n_kernel = model_->n_kernel;
 
-    for (i = 0; i < n_kernel; i++)
-    {
-        for (j = 0; j < l; j++)
-        {
-            delete [] data_->xsp[i][j];
+    for (i = 0; i < n_kernel; i++) {
+        for (j = 0; j < l; j++) {
+            delete[] data_->xsp[i][j];
         }
-        delete [] data_->xsp[i];
+        delete[] data_->xsp[i];
     }
 }
 
-int* most_violated(data* data_, model* model_, solu* solu_ = NULL) 
-{
+int* most_violated(data* data_, model* model_, solu* solu_ = NULL) {
     int i, j;
     auto& train_set_data = data_->train_set->get_data();
     double* alpha;
 
-    if (solu_ == NULL) 
-    {
+    if (solu_ == NULL) {
         // set alpha to 1 because we do not know how much data others have
         alpha = new double[data_->l];
         std::fill_n(alpha, data_->l, 1.0);
-    } 
-    else 
-    {
+    } else {
         alpha = solu_->alpha;
     }
 
@@ -479,13 +430,11 @@ int* most_violated(data* data_, model* model_, solu* solu_ = NULL)
 
     double* w = new double[data_->n];
     std::fill_n(w, data_->n, 0);
-    for (i = 0; i < data_->l; i++)
-    {
+    for (i = 0; i < data_->l; i++) {
         auto xi = train_set_data[i].x;
         double diff = train_set_data[i].y * alpha[i];
         auto it = xi.begin();
-        while (it != xi.end())
-        {
+        while (it != xi.end()) {
             w[(*it).fea] += diff * (*it).val;
             it++;
         }
@@ -493,31 +442,24 @@ int* most_violated(data* data_, model* model_, solu* solu_ = NULL)
     }
 
     double* norm = data_->norm;
-    for (i = 0; i < data_->n; i++) 
-    {
-        if (norm[i] == 0)
-        {
+    for (i = 0; i < data_->n; i++) {
+        if (norm[i] == 0) {
             fea_score.push_back(std::make_pair(i, 0));
-        }
-        else
-        {
+        } else {
             fea_score.push_back(std::make_pair(i, fabs(w[i]) / norm[i]));
         }
     }
-    std::sort(fea_score.begin(), fea_score.end(), [](auto& left, auto& right) {
-        return left.second > right.second;
-    });
+    std::sort(fea_score.begin(), fea_score.end(), [](auto& left, auto& right) { return left.second > right.second; });
 
-    int *dt = new int[model_->B];
+    int* dt = new int[model_->B];
     for (i = 0; i < model_->B; i++) {
         int fea = fea_score[i].first;
         dt[i] = fea;
     }
 
-    delete [] w;
-    if (solu_ == NULL)
-    {
-        delete [] alpha;
+    delete[] w;
+    if (solu_ == NULL) {
+        delete[] alpha;
     }
 
     std::sort(dt, dt + model_->B);
@@ -526,8 +468,7 @@ int* most_violated(data* data_, model* model_, solu* solu_ = NULL)
 
 // this function caches the new kernel corresponding to the given dt
 // this function modifies n_kernel, mu_set and dt_set inside model
-void cache_xsp(data* data_, model* model_, int *dt, int B) 
-{
+void cache_xsp(data* data_, model* model_, int* dt, int B) {
     int i, j;
     int l = data_->l;
     int n_kernel = model_->n_kernel;
@@ -535,33 +476,26 @@ void cache_xsp(data* data_, model* model_, int *dt, int B)
 
     // cache new kernel
     data_->xsp[n_kernel] = new feature_node*[l];
-    for (i = 0; i < l; i++)
-    {
+    for (i = 0; i < l; i++) {
         auto xi = train_set_data[i].x;
         // at most B + 1 elements;
         feature_node* tmp = new feature_node[B + 1];
         feature_node* tmp_orig = tmp;
         auto it = xi.begin();
         j = 0;
-        while (it != xi.end() && j != B)
-        {
+        while (it != xi.end() && j != B) {
             int fea = (*it).fea;
             int dt_idx = dt[j];
-            if (dt_idx == fea)
-            {
+            if (dt_idx == fea) {
                 tmp->index = j;
                 tmp->value = (*it).val;
                 // tmp->value = (*it).val / norm[fea];
                 j++;
                 it++;
                 tmp++;
-            }
-            else if (dt_idx < fea)
-            {
+            } else if (dt_idx < fea) {
                 j++;
-            }
-            else
-            {
+            } else {
                 it++;
             }
         }
@@ -573,8 +507,8 @@ void cache_xsp(data* data_, model* model_, int *dt, int B)
 }
 
 // this function assumes data inside output_solu_ is not newed
-void dcd_svm(data* data_, model* model_, solu* output_solu_, solu* input_solu_ = NULL, double* QD = NULL, int* index = NULL, bool cache = false) 
-{
+void dcd_svm(data* data_, model* model_, solu* output_solu_, solu* input_solu_ = NULL, double* QD = NULL,
+             int* index = NULL, bool cache = false) {
     // Declaration and Initialization
     int l = data_->l;
     int n = data_->n;
@@ -603,35 +537,26 @@ void dcd_svm(data* data_, model* model_, solu* output_solu_, solu* input_solu_ =
     double diff;
 
     // if input_solu_ == NULL => alpha = 0 => wt_list is 0, no need to initialize
-    if (input_solu_ == NULL) 
-    {
+    if (input_solu_ == NULL) {
         std::fill_n(alpha, l, 0);
         std::fill_n(wsp, n_kernel * B, 0);
-    } 
-    else 
-    {
-        for (i = 0; i < l; i++) 
-        {
+    } else {
+        for (i = 0; i < l; i++) {
             alpha[i] = input_solu_->alpha[i];
         }
-        for (i = 0; i < n_kernel * B; i++) 
-        {
+        for (i = 0; i < n_kernel * B; i++) {
             wsp[i] = input_solu_->wsp[i];
         }
     }
-    if (!cache) 
-    {
+    if (!cache) {
         QD = new double[l];
         index = new int[l];
-        for (i = 0; i < l; i++) 
-        {
+        for (i = 0; i < l; i++) {
             QD[i] = 0;
-            for (k = 0; k < n_kernel; k++) 
-            {
+            for (k = 0; k < n_kernel; k++) {
                 feature_node* x = xsp[k][i];
                 double tmp = 0;
-                while (x->index != -1)
-                {
+                while (x->index != -1) {
                     tmp += x->value * x->value;
                     x++;
                 }
@@ -644,33 +569,28 @@ void dcd_svm(data* data_, model* model_, solu* output_solu_, solu* input_solu_ =
     }
 
     int iter = 0;
-    while (iter < model_->max_inn_iter) 
-    {
+    while (iter < model_->max_inn_iter) {
         int clock_start_time = clock();
 
         PGmax_new = 0;
         PGmin_new = 0;
 
-        for (i = 0; i < active_size; i++)
-        {
+        for (i = 0; i < active_size; i++) {
             int j = i + rand() % (active_size - i);
             vector_operator::swap(index[i], index[j]);
         }
 
-        for (s = 0; s < active_size; s++)
-        {
+        for (s = 0; s < active_size; s++) {
             i = index[s];
             G = 0;
             double yi = train_set_data[i].y;
 
             G = 0;
-            for (j = 0; j < n_kernel; j++) 
-            {
+            for (j = 0; j < n_kernel; j++) {
                 double* wsp_tmp_ptr = &wsp[j * B];
                 feature_node* x = xsp[j][i];
                 double tmp = 0;
-                while (x->index != -1)
-                {
+                while (x->index != -1) {
                     tmp += wsp_tmp_ptr[x->index] * x->value;
                     x++;
                 }
@@ -680,55 +600,40 @@ void dcd_svm(data* data_, model* model_, solu* output_solu_, solu* input_solu_ =
             G = G * yi - 1 + diag * alpha[i];
 
             PG = 0;
-            if (alpha[i] ==0)
-            {
-                if (G > PGmax_old)
-                {
+            if (alpha[i] == 0) {
+                if (G > PGmax_old) {
                     active_size--;
                     vector_operator::swap(index[s], index[active_size]);
                     s--;
                     continue;
-                }
-                else if (G < 0)
-                {
+                } else if (G < 0) {
                     PG = G;
                     PGmin_new = std::min(PGmin_new, PG);
                 }
-            }
-            else if (alpha[i] == INF)
-            {
-                if (G < PGmin_old)
-                {
+            } else if (alpha[i] == INF) {
+                if (G < PGmin_old) {
                     active_size--;
                     vector_operator::swap(index[s], index[active_size]);
                     s--;
                     continue;
-                }
-                else if (G > 0)
-                {
+                } else if (G > 0) {
                     PG = G;
                     PGmax_new = std::max(PGmax_new, PG);
                 }
-            }
-            else
-            {
+            } else {
                 PG = G;
                 PGmax_new = std::max(PGmax_new, PG);
                 PGmin_new = std::min(PGmin_new, PG);
-
             }
 
-            if(fabs(PG) > 1.0e-12)
-            {
+            if (fabs(PG) > 1.0e-12) {
                 double alpha_old = alpha[i];
                 alpha[i] = std::min(std::max(alpha[i] - G / QD[i], 0.0), INF);
                 diff = yi * (alpha[i] - alpha_old);
-                for (j = 0; j < n_kernel; j++) 
-                {
+                for (j = 0; j < n_kernel; j++) {
                     double* wsp_tmp_ptr = &wsp[j * B];
                     feature_node* x = xsp[j][i];
-                    while (x->index != -1)
-                    {
+                    while (x->index != -1) {
                         wsp_tmp_ptr[x->index] += x->value * diff;
                         x++;
                     }
@@ -739,50 +644,42 @@ void dcd_svm(data* data_, model* model_, solu* output_solu_, solu* input_solu_ =
 
         iter++;
 
-        if(PGmax_new - PGmin_new <= EPS)
-        {
-            if(active_size == l)
+        if (PGmax_new - PGmin_new <= EPS) {
+            if (active_size == l)
                 break;
-            else
-            {
+            else {
                 active_size = l;
                 PGmax_old = INF;
                 PGmin_old = -INF;
                 continue;
             }
         }
-    
+
         PGmax_old = PGmax_new;
         PGmin_old = PGmin_new;
-        if (PGmax_old == 0)
-        {
+        if (PGmax_old == 0) {
             PGmax_old = INF;
         }
-        if (PGmin_old == 0)
-        {
+        if (PGmin_old == 0) {
             PGmin_old = -INF;
         }
     }
 
     double obj = 0;
-    for (i = 0; i < l; i++) 
-    {
+    for (i = 0; i < l; i++) {
         obj += alpha[i] * (1 - diag * alpha[i]);
     }
-    for (i = 0; i < n_kernel; i++)
-    {
-        double *wsp_tmp_ptr = &wsp[i * B];
+    for (i = 0; i < n_kernel; i++) {
+        double* wsp_tmp_ptr = &wsp[i * B];
         double tmp = 0;
-        for (j = 0; j < B; j++)
-        {
+        for (j = 0; j < B; j++) {
             tmp += wsp_tmp_ptr[j] * wsp_tmp_ptr[j];
         }
         obj -= 0.5 * mu_set[i] * tmp;
         // obj -= 0.5 * mu_set[i] * vector_operator::self_dot_product(&wsp[i * B], B);
     }
 
-    if (!cache) 
-    {
+    if (!cache) {
         delete[] index;
         delete[] QD;
     }
@@ -793,9 +690,9 @@ void dcd_svm(data* data_, model* model_, solu* output_solu_, solu* input_solu_ =
 
 // mu_set, wsp, alpha and obj inside model actually will not be used
 // this function assumes mu_set, wsp and alpha are newed
-void fast_dcd_svm(data* data_, model* model_, double* mu_set, double* wsp, double* alpha, double* obj_, double* QD = NULL, int* index = NULL, bool cache = false)
-{
-    clock_t start = clock();
+void fast_dcd_svm(data* data_, model* model_, double* mu_set, double* wsp, double* alpha, double* obj_,
+                  double* QD = NULL, int* index = NULL, bool cache = false) {
+    // clock_t start = clock();
     // Declaration and Initialization
 
     int l = data_->l;
@@ -824,19 +721,15 @@ void fast_dcd_svm(data* data_, model* model_, double* mu_set, double* wsp, doubl
     std::fill_n(alpha, l, 0);
     std::fill_n(wsp, n_kernel * B, 0);
 
-    if (!cache) 
-    {
+    if (!cache) {
         QD = new double[l];
         index = new int[l];
-        for (i = 0; i < l; i++) 
-        {
+        for (i = 0; i < l; i++) {
             QD[i] = 0;
-            for (k = 0; k < n_kernel; k++) 
-            {
+            for (k = 0; k < n_kernel; k++) {
                 double tmp = 0;
                 feature_node* x = xsp[k][i];
-                while (x->index != -1)
-                {
+                while (x->index != -1) {
                     tmp += x->value * x->value;
                     x++;
                 }
@@ -849,30 +742,25 @@ void fast_dcd_svm(data* data_, model* model_, double* mu_set, double* wsp, doubl
     }
 
     int iter = 0;
-    while (iter < model_->max_inn_iter) 
-    {
+    while (iter < model_->max_inn_iter) {
         PGmax_new = 0;
         PGmin_new = 0;
 
-        for (i = 0; i < active_size; i++)
-        {
+        for (i = 0; i < active_size; i++) {
             int j = i + rand() % (active_size - i);
             vector_operator::swap(index[i], index[j]);
         }
 
-        for (s = 0; s < active_size; s++)
-        {
+        for (s = 0; s < active_size; s++) {
             i = index[s];
             G = 0;
             double yi = train_set_data[i].y;
 
-            for (j = 0; j < n_kernel; j++) 
-            {
+            for (j = 0; j < n_kernel; j++) {
                 double tmp = 0;
-                feature_node *x = xsp[j][i];
-                double *wsp_tmp_ptr = &wsp[j * B];
-                while (x->index != -1)
-                {
+                feature_node* x = xsp[j][i];
+                double* wsp_tmp_ptr = &wsp[j * B];
+                while (x->index != -1) {
                     tmp += wsp_tmp_ptr[x->index] * x->value;
                     x++;
                 }
@@ -882,55 +770,41 @@ void fast_dcd_svm(data* data_, model* model_, double* mu_set, double* wsp, doubl
             G = G * yi - 1 + diag * alpha[i];
 
             PG = 0;
-            if (alpha[i] == 0)
-            {
-                if (G > PGmax_old)
-                {
+            if (alpha[i] == 0) {
+                if (G > PGmax_old) {
                     active_size--;
                     vector_operator::swap(index[s], index[active_size]);
                     s--;
                     continue;
-                }
-                else if (G < 0)
-                {
+                } else if (G < 0) {
                     PG = G;
                     PGmin_new = std::min(PGmin_new, PG);
                 }
-            }
-            else if (alpha[i] == INF)
-            {
-                if (G < PGmin_old)
-                {
+            } else if (alpha[i] == INF) {
+                if (G < PGmin_old) {
                     active_size--;
                     vector_operator::swap(index[s], index[active_size]);
                     s--;
                     continue;
-                }
-                else if (G > 0)
-                {
+                } else if (G > 0) {
                     PG = G;
                     PGmax_new = std::max(PGmax_new, PG);
                 }
-            }
-            else
-            {
+            } else {
                 PG = G;
                 PGmax_new = std::max(PGmax_new, PG);
                 PGmin_new = std::min(PGmin_new, PG);
             }
 
-            if(fabs(PG) > 1.0e-12)
-            {
+            if (fabs(PG) > 1.0e-12) {
                 double alpha_old = alpha[i];
                 alpha[i] = std::min(std::max(alpha[i] - G / QD[i], 0.0), INF);
                 diff = yi * (alpha[i] - alpha_old);
-                for (j = 0; j < n_kernel; j++) 
-                {
+                for (j = 0; j < n_kernel; j++) {
                     // vector_operator::add_sparse(&wsp[j * B], xsp[j][i], diff, B);
                     feature_node* x = xsp[j][i];
                     double* wsp_tmp_ptr = &wsp[j * B];
-                    while (x->index != -1)
-                    {
+                    while (x->index != -1) {
                         wsp_tmp_ptr[x->index] += diff * x->value;
                         x++;
                     }
@@ -940,73 +814,59 @@ void fast_dcd_svm(data* data_, model* model_, double* mu_set, double* wsp, doubl
 
         iter++;
 
-        if(PGmax_new - PGmin_new <= EPS)
-        {
-            if(active_size == l)
-            {
+        if (PGmax_new - PGmin_new <= EPS) {
+            if (active_size == l) {
                 break;
-            }
-            else
-            {
+            } else {
                 active_size = l;
                 PGmax_old = INF;
                 PGmin_old = -INF;
                 continue;
             }
         }
-    
+
         PGmax_old = PGmax_new;
         PGmin_old = PGmin_new;
-        if (PGmax_old == 0)
-        {
+        if (PGmax_old == 0) {
             PGmax_old = INF;
         }
-        if (PGmin_old == 0)
-        {
+        if (PGmin_old == 0) {
             PGmin_old = -INF;
         }
     }
 
     double obj = 0;
-    for (i = 0; i < l; i++) 
-    {
+    for (i = 0; i < l; i++) {
         obj += alpha[i] * (1 - diag * alpha[i]);
     }
     double tmp;
-    for (i = 0; i < n_kernel; i++)
-    {
+    for (i = 0; i < n_kernel; i++) {
         // obj -= 0.5 * mu_set[i] * vector_operator::self_dot_product(&wsp[i * B], B);
         tmp = 0;
-        double *wsp_tmp_ptr = &wsp[i * B];
-        for (j = 0; j < B; j++)
-        {
+        double* wsp_tmp_ptr = &wsp[i * B];
+        for (j = 0; j < B; j++) {
             tmp += wsp_tmp_ptr[j] * wsp_tmp_ptr[j];
         }
         obj -= 0.5 * mu_set[i] * tmp;
     }
 
     double primal = 0;
-    for (i = 0; i < n_kernel; i++)
-    {
+    for (i = 0; i < n_kernel; i++) {
         tmp = 0;
-        double *wsp_tmp_ptr = &wsp[i * B];
-        for (j = 0; j < B; j++)
-        {
+        double* wsp_tmp_ptr = &wsp[i * B];
+        for (j = 0; j < B; j++) {
             tmp += wsp_tmp_ptr[j] * wsp_tmp_ptr[j];
         }
         primal += 0.5 * mu_set[i] * tmp;
     }
-    for (i = 0; i < l; i++)
-    {
+    for (i = 0; i < l; i++) {
         double yi = train_set_data[i].y;
         double loss = 0;
-        for (j = 0; j < n_kernel; j++) 
-        {
+        for (j = 0; j < n_kernel; j++) {
             tmp = 0;
             double* tmp_wsp = &wsp[j * B];
             feature_node* x = xsp[j][i];
-            while (x->index != -1)
-            {
+            while (x->index != -1) {
                 tmp += tmp_wsp[x->index] * x->value;
                 x++;
             }
@@ -1016,8 +876,7 @@ void fast_dcd_svm(data* data_, model* model_, double* mu_set, double* wsp, doubl
         loss *= yi * -1;
         loss += 1;
         // loss = 1 - labeled_point.y * w.dot(labeled_point.x);
-        if (loss > 0) 
-        {
+        if (loss > 0) {
             // l2 loss
             primal += C * loss * loss;
         }
@@ -1025,21 +884,19 @@ void fast_dcd_svm(data* data_, model* model_, double* mu_set, double* wsp, doubl
 
     *obj_ = primal;
 
-    if (!cache) 
-    {
+    if (!cache) {
         delete[] index;
         delete[] QD;
     }
     // *obj_ = obj;
 
-    clock_t end = clock();
-    double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
-    husky::LOG_I << "DCD_SVM: time elapsed: " + std::to_string(time_spent);
-    husky::LOG_I << "DCD_SVM: inn_iter: " + std::to_string(iter);
+    // clock_t end = clock();
+    // double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
+    // husky::LOG_I << "DCD_SVM: time elapsed: " + std::to_string(time_spent);
+    // husky::LOG_I << "DCD_SVM: inn_iter: " + std::to_string(iter);
 }
 
-void simpleMKL(data* data_, model* model_, solu* solu_) 
-{
+void simpleMKL(data* data_, model* model_, solu* solu_) {
     clock_t start = clock();
     int i, j, k;
     int nloop, loop, maxloop;
@@ -1048,7 +905,7 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
     maxloop = 4;
     double tmp;
 
-    const int l = data_->l;   
+    const int l = data_->l;
     const int n = data_->n;
     const int n_kernel = model_->n_kernel;
     const int B = model_->B;
@@ -1062,20 +919,17 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
 
     // cache QD and index
     const auto& train_set_data = data_->train_set->get_data();
-    feature_node ***xsp = data_->xsp;
+    feature_node*** xsp = data_->xsp;
     double diag = 0.5 / model_->C;
     double* QD = new double[l];
     int* index = new int[l];
 
-    for (i = 0; i < l; i++) 
-    {
+    for (i = 0; i < l; i++) {
         QD[i] = 0;
-        for (j = 0; j < n_kernel; j++) 
-        {
+        for (j = 0; j < n_kernel; j++) {
             tmp = 0;
-            feature_node *x = xsp[j][i];
-            while (x->index != -1)
-            {
+            feature_node* x = xsp[j][i];
+            while (x->index != -1) {
                 tmp += x->value * x->value;
                 x++;
             }
@@ -1092,12 +946,10 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
     double* wsp = solu_->wsp;
     // compute gradient
     double* grad = new double[n_kernel];
-    for (i = 0; i < n_kernel; i++) 
-    {
+    for (i = 0; i < n_kernel; i++) {
         tmp = 0;
-        double *wsp_tmp_ptr = &wsp[i * B];
-        for (j = 0; j < B; j++)
-        {
+        double* wsp_tmp_ptr = &wsp[i * B];
+        for (j = 0; j < B; j++) {
             tmp += wsp_tmp_ptr[j] * wsp_tmp_ptr[j];
         }
         grad[i] = -0.5 * tmp;
@@ -1110,20 +962,17 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
         double old_obj = obj;
 
         double* new_mu_set = new double[n_kernel];
-        for (i = 0; i < n_kernel; i++)
-        {
+        for (i = 0; i < n_kernel; i++) {
             new_mu_set[i] = mu_set[i];
         }
 
         // normalize gradient
         double sum_grad = 0;
-        for(i = 0; i < n_kernel; i++)
-        {
+        for (i = 0; i < n_kernel; i++) {
             sum_grad += grad[i] * grad[i];
         }
         double sqrt_grad = sqrt(sum_grad);
-        for(i = 0; i < n_kernel; i++)
-        {
+        for (i = 0; i < n_kernel; i++) {
             grad[i] /= sqrt_grad;
         }
 
@@ -1133,21 +982,16 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
 
         vector_operator::my_max(mu_set, n_kernel, &max_mu, &max_index);
         double grad_tmp = grad[max_index];
-        for (i = 0; i < n_kernel; i++) 
-        {
+        for (i = 0; i < n_kernel; i++) {
             grad[i] -= grad_tmp;
         }
 
         double* desc = new double[n_kernel];
         double sum_desc = 0;
-        for(i = 0; i < n_kernel; i++)
-        {
-            if( mu_set[i] > 0 || grad[i] < 0)
-            {
+        for (i = 0; i < n_kernel; i++) {
+            if (mu_set[i] > 0 || grad[i] < 0) {
                 desc[i] = -grad[i];
-            }
-            else
-            {
+            } else {
                 desc[i] = 0;
             }
             sum_desc += desc[i];
@@ -1170,90 +1014,73 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
             flag = 0;
         }
 
-        if (flag == 1) 
-        {
-            if (step_max > 0.1) 
-            {
+        if (flag == 1) {
+            if (step_max > 0.1) {
                 step_max = 0.1;
                 delta_max = step_max;
             }
 
             // model* tmp_model = new model(model_);
             // solu* tmp_solu = new solu(l, n, B, n_kernel);
-            double *tmp_mu_set = new double[n_kernel];
-            double *tmp_wsp = new double[n_kernel * B];
-            double *tmp_alpha = new double[l];
+            double* tmp_mu_set = new double[n_kernel];
+            double* tmp_wsp = new double[n_kernel * B];
+            double* tmp_alpha = new double[l];
             double tmp_obj;
 
-            while (cost_max < cost_min) 
-            {
-                husky::LOG_I << "descent direction search";
-                for(i = 0; i < n_kernel; i++)
-                {
+            while (cost_max < cost_min) {
+                // husky::LOG_I << "descent direction search";
+                for (i = 0; i < n_kernel; i++) {
                     tmp_mu_set[i] = new_mu_set[i] + step_max * desc[i];
                 }
                 // use descent direction to compute new objective
                 fast_dcd_svm(data_, model_, tmp_mu_set, tmp_wsp, tmp_alpha, &tmp_obj, QD, index, true);
                 cost_max = tmp_obj;
-                if (cost_max < cost_min) 
-                {
+                if (cost_max < cost_min) {
                     cost_min = cost_max;
 
-                    for (i = 0; i < n_kernel; i++) 
-                    {
+                    for (i = 0; i < n_kernel; i++) {
                         new_mu_set[i] = tmp_mu_set[i];
                         mu_set[i] = tmp_mu_set[i];
                     }
 
                     sum_desc = 0;
                     int fflag = 1;
-                    for (i = 0; i < n_kernel; i++) 
-                    {
-                        if (new_mu_set[i] > 1e-12 || desc[i] > 0) 
-                        {
+                    for (i = 0; i < n_kernel; i++) {
+                        if (new_mu_set[i] > 1e-12 || desc[i] > 0) {
                             ;
-                        } 
-                        else 
-                        {
+                        } else {
                             desc[i] = 0;
                         }
 
-                        if (i != max_index) 
-                        {
+                        if (i != max_index) {
                             sum_desc += desc[i];
                         }
                         // as long as one of them has descent direction negative, we will go on
-                        if (desc[i] < 0) 
-                        {
+                        if (desc[i] < 0) {
                             fflag = 0;
                         }
                     }
 
                     desc[max_index] = -sum_desc;
                     solu_->obj = tmp_obj;
-                    for (i = 0; i < l; i++) 
-                    {
+                    for (i = 0; i < l; i++) {
                         alpha[i] = tmp_alpha[i];
                     }
-                    for (i = 0; i < n_kernel * B; i++)
-                    {
+                    for (i = 0; i < n_kernel * B; i++) {
                         wsp[i] = tmp_wsp[i];
                     }
 
-                    if (fflag) 
-                    {
+                    if (fflag) {
                         step_max = 0;
                         delta_max = 0;
-                    } 
-                    else 
-                    {
+                    } else {
                         // we can still descend, loop again
                         vector_operator::my_soft_min(new_mu_set, desc, n_kernel, &step_max);
                         delta_max = step_max;
                         cost_max = 0;
-                    } // if (fflag)
-                } // if (cost_max < cost_min)
-            } // while (cost_max < cost_min) 
+                    }  // if (fflag)
+                }      // if (cost_max < cost_min)
+            }          // while (cost_max < cost_min)
 
             // conduct line search
             double* step = new double[4];
@@ -1271,13 +1098,10 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
             double min_val;
             int min_idx;
 
-            if (cost_max < cost_min) 
-            {
+            if (cost_max < cost_min) {
                 min_val = cost_max;
                 min_idx = 3;
-            } 
-            else 
-            {
+            } else {
                 min_val = cost_min;
                 min_idx = 0;
             }
@@ -1298,27 +1122,23 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
             double tmp_obj_2;
 
             int step_loop = 0;
-            while ((step_max - step_min) > 1e-1 * fabs(delta_max) && step_max > 1e-12) 
-            {
-                husky::LOG_I << "line search";
+            while ((step_max - step_min) > 1e-1 * fabs(delta_max) && step_max > 1e-12) {
+                // husky::LOG_I << "line search";
                 step_loop += 1;
-                if (step_loop > 8) 
-                {
+                if (step_loop > 8) {
                     break;
                 }
                 double step_medr = step_min + (step_max - step_min) / gold_ratio;
                 double step_medl = step_min + (step_medr - step_min) / gold_ratio;
 
                 // half
-                for (i = 0; i < n_kernel; i++) 
-                {
+                for (i = 0; i < n_kernel; i++) {
                     tmp_mu_set_1[i] = new_mu_set[i] + step_medr * desc[i];
                 }
                 fast_dcd_svm(data_, model_, tmp_mu_set_1, tmp_wsp_1, tmp_alpha_1, &tmp_obj_1, QD, index, true);
 
                 // half half
-                for (i = 0; i < n_kernel; i++) 
-                {
+                for (i = 0; i < n_kernel; i++) {
                     tmp_mu_set_2[i] = new_mu_set[i] + step_medl * desc[i];
                 }
                 fast_dcd_svm(data_, model_, tmp_mu_set_2, tmp_wsp_2, tmp_alpha_2, &tmp_obj_2, QD, index, true);
@@ -1335,72 +1155,61 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
 
                 vector_operator::my_min(cost, 4, &min_val, &min_idx);
 
-                switch(min_idx) 
-                {
-                    case 0:
-                        step_max = step_medl;
-                        cost_max = cost[1];
-                        solu_->obj = tmp_obj_2;
-                        for (i = 0; i < n_kernel * B; i++) 
-                        {
-                            wsp[i] = tmp_wsp_2[i];
-                        }
-                        for (i = 0; i < l; i++) 
-                        {
-                            alpha[i] = tmp_alpha_2[i];
-                        }
+                switch (min_idx) {
+                case 0:
+                    step_max = step_medl;
+                    cost_max = cost[1];
+                    solu_->obj = tmp_obj_2;
+                    for (i = 0; i < n_kernel * B; i++) {
+                        wsp[i] = tmp_wsp_2[i];
+                    }
+                    for (i = 0; i < l; i++) {
+                        alpha[i] = tmp_alpha_2[i];
+                    }
                     break;
 
-                    case 1:
-                        step_max = step_medr;
-                        cost_max = cost[2];
-                        solu_->obj = tmp_obj_1;
-                        for (i = 0; i < n_kernel * B; i++) 
-                        {
-                            wsp[i] = tmp_wsp_1[i];
-                        }
-                        for (i = 0; i < l; i++) 
-                        {
-                            alpha[i] = tmp_alpha_1[i];
-                        }
+                case 1:
+                    step_max = step_medr;
+                    cost_max = cost[2];
+                    solu_->obj = tmp_obj_1;
+                    for (i = 0; i < n_kernel * B; i++) {
+                        wsp[i] = tmp_wsp_1[i];
+                    }
+                    for (i = 0; i < l; i++) {
+                        alpha[i] = tmp_alpha_1[i];
+                    }
                     break;
 
-                    case 2:
-                        step_min = step_medl;
-                        cost_min = cost[1];
-                        solu_->obj = tmp_obj_2;
-                        for (i = 0; i < n_kernel * B; i++) 
-                        {
-                            wsp[i] = tmp_wsp_2[i];
-                        }
-                        for (i = 0; i < l; i++) 
-                        {
-                            alpha[i] = tmp_alpha_2[i];
-                        }                
+                case 2:
+                    step_min = step_medl;
+                    cost_min = cost[1];
+                    solu_->obj = tmp_obj_2;
+                    for (i = 0; i < n_kernel * B; i++) {
+                        wsp[i] = tmp_wsp_2[i];
+                    }
+                    for (i = 0; i < l; i++) {
+                        alpha[i] = tmp_alpha_2[i];
+                    }
                     break;
 
-                    case 3:
-                        step_min = step_medr;
-                        cost_min = cost[2];
-                        solu_->obj = tmp_obj_1;
-                        for (i = 0; i < n_kernel * B; i++) 
-                        {
-                            wsp[i] = tmp_wsp_1[i];
-                        }
-                        for (i = 0; i < l; i++) 
-                        {
-                            alpha[i] = tmp_alpha_1[i];
-                        }                
+                case 3:
+                    step_min = step_medr;
+                    cost_min = cost[2];
+                    solu_->obj = tmp_obj_1;
+                    for (i = 0; i < n_kernel * B; i++) {
+                        wsp[i] = tmp_wsp_1[i];
+                    }
+                    for (i = 0; i < l; i++) {
+                        alpha[i] = tmp_alpha_1[i];
+                    }
                     break;
-                }// switch(min_idx);      
-            } // while ((step_max - step_min) > 1e-1 * fabs(delta_max) && step_max > 1e-12)
+                }  // switch(min_idx);
+            }      // while ((step_max - step_min) > 1e-1 * fabs(delta_max) && step_max > 1e-12)
 
             // assignment
             double step_size = step[min_idx];
-            if (solu_->obj < old_obj) 
-            {
-                for (i = 0; i < n_kernel; i++) 
-                {
+            if (solu_->obj < old_obj) {
+                for (i = 0; i < n_kernel; i++) {
                     new_mu_set[i] += step_size * desc[i];
                     mu_set[i] = new_mu_set[i];
                 }
@@ -1411,21 +1220,21 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
             // delete tmp_ls_solu_2;
             // delete tmp_solu;
             // delete tmp_model;
-            delete [] tmp_alpha_2;
-            delete [] tmp_wsp_2;
-            delete [] tmp_mu_set_2;
+            delete[] tmp_alpha_2;
+            delete[] tmp_wsp_2;
+            delete[] tmp_mu_set_2;
 
-            delete [] tmp_alpha_1;
-            delete [] tmp_wsp_1;
-            delete [] tmp_mu_set_1;
+            delete[] tmp_alpha_1;
+            delete[] tmp_wsp_1;
+            delete[] tmp_mu_set_1;
 
-            delete [] tmp_alpha;
-            delete [] tmp_wsp;
-            delete [] tmp_mu_set;
+            delete[] tmp_alpha;
+            delete[] tmp_wsp;
+            delete[] tmp_mu_set;
 
             delete cost;
             delete step;
-        }// if(flag)
+        }  // if(flag)
 
         // test convergence
         double mu_max;
@@ -1433,30 +1242,23 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
 
         vector_operator::my_max(mu_set, n_kernel, &mu_max, &mu_max_idx);
         // normalize mu_max
-        if (mu_max > 1e-12) 
-        {
+        if (mu_max > 1e-12) {
             double mu_sum = 0;
-            for (i = 0; i < n_kernel; i++) 
-            {
-                if (mu_set[i] < 1e-12) 
-                {
+            for (i = 0; i < n_kernel; i++) {
+                if (mu_set[i] < 1e-12) {
                     mu_set[i] = 0;
                 }
                 mu_sum += mu_set[i];
             }
-            for (i = 0; i < n_kernel; i++) 
-            {
+            for (i = 0; i < n_kernel; i++) {
                 mu_set[i] /= mu_sum;
             }
         }
 
-
-        for (i = 0; i < n_kernel; i++) 
-        {
+        for (i = 0; i < n_kernel; i++) {
             tmp = 0;
-            double *wsp_tmp_ptr = &wsp[i * B];
-            for (j = 0; j < B; j++)
-            {
+            double* wsp_tmp_ptr = &wsp[i * B];
+            for (j = 0; j < B; j++) {
                 tmp += wsp_tmp_ptr[j] * wsp_tmp_ptr[j];
             }
             grad[i] = -0.5 * tmp;
@@ -1465,24 +1267,17 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
         double min_grad = 0;
         double max_grad = 0;
         int ffflag = 1;
-        for (i = 0; i < n_kernel; i++) 
-        {
-            if (mu_set[i] > 1e-8) 
-            {
-                if (ffflag) 
-                {
+        for (i = 0; i < n_kernel; i++) {
+            if (mu_set[i] > 1e-8) {
+                if (ffflag) {
                     min_grad = grad[i];
                     max_grad = grad[i];
                     ffflag = 0;
-                } 
-                else 
-                {
-                    if (grad[i] < min_grad) 
-                    {
+                } else {
+                    if (grad[i] < min_grad) {
                         min_grad = grad[i];
                     }
-                    if (grad[i] > max_grad) 
-                    {
+                    if (grad[i] > max_grad) {
                         max_grad = grad[i];
                     }
                 }
@@ -1492,8 +1287,7 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
         // double KKTconstraint = fabs(min_grad - max_grad) / fabs(min_grad);
 
         double* tmp_grad = new double[n_kernel];
-        for (i = 0; i < n_kernel; i++) 
-        {
+        for (i = 0; i < n_kernel; i++) {
             tmp_grad[i] = -1 * grad[i];
         }
         double max_tmp;
@@ -1501,19 +1295,16 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
         vector_operator::my_max(tmp_grad, n_kernel, &max_tmp, &max_tmp_idx);
 
         double tmp_sum = 0;
-        for (i = 0; i < l; i++) 
-        {
+        for (i = 0; i < l; i++) {
             tmp_sum += alpha[i] * (1 - alpha[i] * diag);
             // tmp_sum += alpha[i];
         }
 
         double mkl_grad = 0;
-        for (i = 0; i < n_kernel; i++)
-        {
+        for (i = 0; i < n_kernel; i++) {
             tmp = 0;
             double* tmp_wsp = &wsp[i * B];
-            for (j = 0; j < B; j++)
-            {
+            for (j = 0; j < B; j++) {
                 tmp += tmp_wsp[j] * tmp_wsp[j];
             }
             mkl_grad += mu_set[i] * tmp;
@@ -1521,31 +1312,28 @@ void simpleMKL(data* data_, model* model_, solu* solu_)
         mkl_grad *= 0.5;
         double dual_gap = (mkl_grad - max_tmp) / mkl_grad;
         // double dual_gap = (solu_->obj + max_tmp - tmp_sum) / solu_->obj;
-        husky::LOG_I << "[outer loop][dual_gap]: " + std::to_string(fabs(dual_gap));
+        // husky::LOG_I << "[outer loop][dual_gap]: " + std::to_string(fabs(dual_gap));
         // husky::LOG_I << "[outer loop][KKTconstraint]: " + std::to_string(KKTconstraint);
         // if (KKTconstraint < 0.05 || fabs(dual_gap) < 0.001) {
-        if (fabs(dual_gap) < 0.01) 
-        {
+        if (fabs(dual_gap) < 0.01) {
             loop = 0;
         }
-        if (nloop > maxloop) 
-        {
+        if (nloop > maxloop) {
             loop = 0;
             break;
         }
 
-        delete [] tmp_grad;
-        delete [] desc;
-        delete [] new_mu_set;
+        delete[] tmp_grad;
+        delete[] desc;
+        delete[] new_mu_set;
     }
 
-    delete [] grad;
-    clock_t end = clock();
-    husky::LOG_I << "time elapsed " + std::to_string((double)(end - start) / CLOCKS_PER_SEC);
+    delete[] grad;
+    // clock_t end = clock();
+    // husky::LOG_I << "time elapsed " + std::to_string((double)(end - start) / CLOCKS_PER_SEC);
 }
 
-double evaluate(data* data_, model* model_, solu* solu_) 
-{
+double evaluate(data* data_, model* model_, solu* solu_) {
     int i, j;
     int n = data_->n;
     int B = model_->B;
@@ -1556,12 +1344,10 @@ double evaluate(data* data_, model* model_, solu* solu_)
     double* w = new double[n];
     // recover w from wsp
     std::fill_n(w, n, 0);
-    for (i = 0; i < n_kernel; i++)
-    {
+    for (i = 0; i < n_kernel; i++) {
         double* wsp_tmp_ptr = &wsp[i * B];
         int* dt_set_tmp = dt_set[i];
-        for (j = 0; j < B; j++)
-        {
+        for (j = 0; j < B; j++) {
             w[dt_set_tmp[j]] += mu_set[i] * wsp_tmp_ptr[j];
             // w[dt_set[i][j]] += mu_set[i] * wsp[i * B + j];
         }
@@ -1571,38 +1357,31 @@ double evaluate(data* data_, model* model_, solu* solu_)
     double indicator;
     int error_agg = 0;
 
-    for (auto labeled_point : test_set_data)
-    {
+    for (auto labeled_point : test_set_data) {
         double tmp = 0;
         auto it = labeled_point.x.begin();
-        while (it != labeled_point.x.end())
-        {
+        while (it != labeled_point.x.end()) {
             tmp += w[(*it).fea] * (*it).val;
             it++;
         }
         indicator = labeled_point.y * tmp;
         // indicator = labeled_point.y * vector_operator::dot_product(w, labeled_point.x, data_->n);
-        if (indicator <= 0) 
-        {
+        if (indicator <= 0) {
             error_agg += 1;
         }
     }
 
-    husky::LOG_I << "Classification accuracy on testing set with [B = " + 
-                    std::to_string(model_->B) + "][C = " + 
-                    std::to_string(model_->C) + "], " +
-                    "[max_out_iter = " + std::to_string(model_->max_out_iter) + "], " +
-                    "[max_inn_iter = " + std::to_string(model_->max_inn_iter) + "], " +
-                    "[test set size = " + std::to_string(test_set_data.size()) + "]: " +
-                    std::to_string(1.0 - static_cast<double>(error_agg) / test_set_data.size());  
+    husky::LOG_I << "Classification accuracy on testing set with [B = " + std::to_string(model_->B) + "][C = " +
+                        std::to_string(model_->C) + "], " + "[max_out_iter = " + std::to_string(model_->max_out_iter) +
+                        "], " + "[max_inn_iter = " + std::to_string(model_->max_inn_iter) + "], " +
+                        "[test set size = " + std::to_string(test_set_data.size()) + "]: " +
+                        std::to_string(1.0 - static_cast<double>(error_agg) / test_set_data.size());
 
-    delete [] w;
+    delete[] w;
     return 1.0 - static_cast<double>(error_agg) / test_set_data.size();
 }
 
-void run_dcd_svm() 
-{
-
+void run_dcd_svm() {
     data* data_ = new data;
     model* model_ = new model;
     solu* solu_ = new solu;
@@ -1615,8 +1394,8 @@ void run_dcd_svm()
     // cache_xsp(data_, model_, dt1, 5);
     // cache_xsp(data_, model_, dt2, 5);
     // cache_xsp(data_, model_, dt3, 5);
-    int *dt = most_violated(data_, model_);
-    cache_xsp(data_, model_, dt, model_->B); // cache xsp, add dt to model and increment number of kernels
+    int* dt = most_violated(data_, model_);
+    cache_xsp(data_, model_, dt, model_->B);  // cache xsp, add dt to model and increment number of kernels
     husky::LOG_I << "cache completed! number of kernel: " + std::to_string(model_->n_kernel);
     dcd_svm(data_, model_, solu_);
     vector_operator::show(model_->mu_set, model_->n_kernel, "mu_set");
@@ -1624,114 +1403,81 @@ void run_dcd_svm()
     evaluate(data_, model_, solu_);
     destroy(data_, model_, solu_);
     auto end = std::chrono::steady_clock::now();
-    husky::LOG_I << "Time elapsed: "
-                    << std::chrono::duration_cast<std::chrono::duration<float>>(end - start).count();   
+    husky::LOG_I << "Time elapsed: " << std::chrono::duration_cast<std::chrono::duration<float>>(end - start).count();
 }
 
-void job_runner() 
-{
+void job_runner() {
     data* data_ = new data;
     model* model_ = new model;
     solu* solu_ = new solu;
 
     initialize(data_, model_);
-
-    // double *kernel_acc = new double[MAX_NUM_KERNEL];
-    // double *kernel_time = new double[MAX_NUM_KERNEL];
-
-    double *kernel_acc = new double[MAX_NUM_KERNEL];
-    double *kernel_violated_time = new double[MAX_NUM_KERNEL];
-    double *kernel_cache_time = new double[MAX_NUM_KERNEL];
-    double *kernel_train_time = new double[MAX_NUM_KERNEL];
-
+    clock_t tot_time = clock();
+    double* kernel_acc = new double[MAX_NUM_KERNEL];
+    double* kernel_time = new double[MAX_NUM_KERNEL];
 
     int iter = 0;
     int max_out_iter = model_->max_out_iter;
     double mkl_obj = INF;
     double last_obj = INF;
     double obj_diff = 0.0;
-    int *dt;
+    int* dt;
 
     clock_t start, end;
-    while(iter < max_out_iter) 
-    {
+    while (iter < max_out_iter) {
         start = clock();
         last_obj = mkl_obj;
-        if (iter == 0) 
-        {
+        if (iter == 0) {
             dt = most_violated(data_, model_);
-        } 
-        else 
-        {
+        } else {
             dt = most_violated(data_, model_, solu_);
         }
-        end = clock();
-        kernel_violated_time[iter] = (double)(end - start) / CLOCKS_PER_SEC;
 
-        // if (vector_operator::element_at(dt, model_->dt_set, model_->n_kernel, model_->B))
-        // {
-        //     husky::LOG_I << "element_at: FGM converged";
-        //     delete [] dt;
-        //     break;
-        // }
-        vector_operator::show(dt, model_->B, "dt");
-        start = clock();
         cache_xsp(data_, model_, dt, model_->B);
-        end = clock();
-        kernel_cache_time[iter] = (double)(end - start) / CLOCKS_PER_SEC;
-        husky::LOG_I << "cache completed! number of kernel: " + std::to_string(model_->n_kernel);
-        if (solu_->wsp == NULL && solu_->alpha == NULL)
-        {
+        if (solu_->wsp == NULL && solu_->alpha == NULL) {
+            solu_->wsp = new double[model_->n_kernel * model_->B];
+            solu_->alpha = new double[data_->l];
+        } else {
+            delete[] solu_->wsp;
+            delete[] solu_->alpha;
             solu_->wsp = new double[model_->n_kernel * model_->B];
             solu_->alpha = new double[data_->l];
         }
-        else 
-        {
-            delete [] solu_->wsp;
-            delete [] solu_->alpha;
-            solu_->wsp = new double[model_->n_kernel * model_->B];
-            solu_->alpha = new double[data_->l];            
-        }
-        start = clock();
-        // warm_set_model(data_, model_);
         simpleMKL(data_, model_, solu_);
         end = clock();
-        kernel_train_time[iter] = (double)(end - start) / CLOCKS_PER_SEC;
+        kernel_time[iter] = (double) (end - start) / CLOCKS_PER_SEC;
         kernel_acc[iter] = evaluate(data_, model_, solu_);
 
         mkl_obj = solu_->obj;
         obj_diff = fabs(mkl_obj - last_obj);
-        husky::LOG_I << "[iteration " + std::to_string(iter) + "][mkl_obj " + std::to_string(mkl_obj) + "][obj_diff " + std::to_string(obj_diff) + "]";
-        vector_operator::show(model_->mu_set, model_->n_kernel, "mu_set");
+        husky::LOG_I << "[iteration " + std::to_string(iter) + "][mkl_obj " + std::to_string(mkl_obj) + "][obj_diff " +
+                            std::to_string(obj_diff) + "]";
         // if (mkl_obj > last_obj)
         // {
         //     husky::LOG_I << "mkl_obj > last_obj: FGM converged";
         //     break;
         // }
-        // if (obj_diff < 0.0001 * abs(last_obj)) 
+        // if (obj_diff < 0.0001 * abs(last_obj))
         // {
         //     husky::LOG_I << "obj_diff < 0.001 * abs(last_obj): FGM converged";
         //     break;
         // }
-        // if (model_->mu_set[iter] < 0.0001) 
+        // if (model_->mu_set[iter] < 0.0001)
         // {
         //     husky::LOG_I << "model_->mu_set[iter] < 0.0001: FGM converged";
         //     break;
         // }
         iter++;
     }
-    if (iter == max_out_iter)
-    {
+    double elapsed = (double) (clock() - tot_time) / CLOCKS_PER_SEC;
+    if (iter == max_out_iter) {
         iter = max_out_iter - 1;
     }
-    vector_operator::show(model_->mu_set, model_->n_kernel, "mu_set");
     int** dt_set = model_->dt_set;
 
     FILE* dout = fopen("fgm_rcv1_dt", "w");
-    for (int i = 0; i <= iter; i++)
-    {
-        for (int j = 0; j < model_->B; j++)
-        {
+    for (int i = 0; i <= iter; i++) {
+        for (int j = 0; j < model_->B; j++) {
             fprintf(dout, "%d ", dt_set[i][j]);
         }
         fprintf(dout, "\n");
@@ -1740,63 +1486,41 @@ void job_runner()
     // FILE* fout = fopen("fgm_syn_large_plot.csv", "w");
     FILE* fout = fopen("fgm_rcv1_plot.csv", "w");
     fprintf(fout, "n_kernel.Vs.accuracy ");
-    for (int i = 0; i <= iter; i++)
-    {
+    for (int i = 0; i <= iter; i++) {
         fprintf(fout, "%f ", kernel_acc[i]);
     }
     fprintf(fout, "\n");
-    fprintf(fout, "n_kernel.Vs.violated_time ");
-    for (int i = 0; i <= iter; i++)
-    {
-        fprintf(fout, "%f ", kernel_violated_time[i]);
-    }
-    fprintf(fout, "\n");
-    fprintf(fout, "n_kernel.Vs.cache_time ");
-    for (int i = 0; i <= iter; i++)
-    {
-        fprintf(fout, "%f ", kernel_cache_time[i]);
-    }
-    fprintf(fout, "\n");
     fprintf(fout, "n_kernel.Vs.train_time ");
-    for (int i = 0; i <= iter; i++)
-    {
-        fprintf(fout, "%f ", kernel_train_time[i]);
+    for (int i = 0; i <= iter; i++) {
+        fprintf(fout, "%f ", kernel_time[i]);
     }
     fprintf(fout, "\n");
     fprintf(fout, "mu_set ");
-    for (int i = 0; i <= iter; i++)
-    {
+    for (int i = 0; i <= iter; i++) {
         fprintf(fout, "%f ", model_->mu_set[i]);
     }
     fprintf(fout, "\n");
+    fprintf(fout, "total time: %f\n", elapsed);
 
-    delete [] kernel_acc;
-    delete [] kernel_violated_time;
-    delete [] kernel_cache_time;
-    delete [] kernel_train_time;
+    delete[] kernel_acc;
+    delete[] kernel_time;
 
     evaluate(data_, model_, solu_);
     destroy(data_, model_, solu_);
 }
 
-
-void init() 
-{
-    if (husky::Context::get_param("is_sparse") == "true") 
-    {
+void init() {
+    if (husky::Context::get_param("is_sparse") == "true") {
         job_runner();
-    } 
-    else 
-    {
+    } else {
         husky::LOG_I << "Dense data format is not supported";
     }
 }
 
-int main(int argc, char** argv) 
-{
-    std::vector<std::string> args({"hdfs_namenode", "hdfs_namenode_port", "train", "test", "B", "C", "format", "is_sparse", "max_out_iter", "max_inn_iter"});
-    if (husky::init_with_args(argc, argv, args)) 
-    {
+int main(int argc, char** argv) {
+    std::vector<std::string> args({"hdfs_namenode", "hdfs_namenode_port", "train", "test", "B", "C", "format",
+                                   "is_sparse", "max_out_iter", "max_inn_iter"});
+    if (husky::init_with_args(argc, argv, args)) {
         husky::run_job(init);
         return 0;
     }

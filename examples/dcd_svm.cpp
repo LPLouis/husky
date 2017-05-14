@@ -4,7 +4,7 @@
 
     problem specification:
         f(a) = 0.5* \alpha^TQ\alpha + 0.5/C * \alpha^T\alpha + \beta^T\alpha
-        LB[i] <= \alpha[i]
+        lower_bound[i] <= \alpha[i]
 
     Setting \beta = [-1, -1, -1, ..., -1] gives the standard l2 loss SVM problem
     Note this can only work on single machine
@@ -57,17 +57,17 @@ using ObjT = husky::lib::ml::LabeledPointHObj<double, double, true>;
 #define EPS 1.0e-6
 
 class problem {
-public:
+   public:
     double C;
-    int n;          // number of features (appended 1 included)
-    int l;         
+    int n;  // number of features (appended 1 included)
+    int l;
     int max_iter;
     husky::ObjList<ObjT>* train_set;
     husky::ObjList<ObjT>* test_set;
 };
 
 class solution {
-public:
+   public:
     double dual_obj;
     DenseVector<double> alpha;
     DenseVector<double> w;
@@ -89,11 +89,11 @@ T self_dot_product(const husky::lib::Vector<T, is_sparse>& v) {
     return ret;
 }
 
-void initialize(problem* problem_) {
+void initialize(problem* prob) {
     auto& train_set = husky::ObjListStore::create_objlist<ObjT>("train_set");
     auto& test_set = husky::ObjListStore::create_objlist<ObjT>("test_set");
-    problem_->train_set = &train_set;
-    problem_->test_set = &test_set;
+    prob->train_set = &train_set;
+    prob->test_set = &test_set;
 
     auto format_str = husky::Context::get_param("format");
     husky::lib::ml::DataFormat format;
@@ -108,8 +108,8 @@ void initialize(problem* problem_) {
     n = std::max(n, husky::lib::ml::load_data(husky::Context::get_param("test"), test_set, format));
 
     // get model config parameters
-    problem_->C = std::stod(husky::Context::get_param("C"));
-    problem_->max_iter = std::stoi(husky::Context::get_param("max_iter"));
+    prob->C = std::stod(husky::Context::get_param("C"));
+    prob->max_iter = std::stoi(husky::Context::get_param("max_iter"));
 
     auto& train_set_data = train_set.get_data();
 
@@ -124,30 +124,32 @@ void initialize(problem* problem_) {
 
     n += 1;
     int l = train_set_data.size();
-    problem_->n = n;
-    problem_->l = l;
+    prob->n = n;
+    prob->l = l;
 
     husky::LOG_I << "number of samples: " + std::to_string(l);
     husky::LOG_I << "number of features: " + std::to_string(n);
 }
 
 template <bool is_sparse = true>
-solution* dcd_svm_no_shrink_l2(problem* problem_) {
-    // Declaration and Initialization
-    int l = problem_->l;
-    int n = problem_->n;
-    double C = problem_->C;
+solution* dcd_svm_no_shrink_l2(problem* prob) {
+    clock_t start = clock();
 
-    const auto& labeled_point_vector = problem_->train_set->get_data();
+    // Declaration and Initialization
+    int l = prob->l;
+    int n = prob->n;
+    double C = prob->C;
+
+    const auto& labeled_point_vector = prob->train_set->get_data();
 
     double diag = 0.5 / C;
-    double UB = INF;
+    double upper_bound = INF;
 
     double* QD = new double[l];
     int* index = new int[l];
 
     int iter = 0;
-    const int max_iter = problem_->max_iter;
+    const int max_iter = prob->max_iter;
 
     int i, k;
 
@@ -155,7 +157,7 @@ solution* dcd_svm_no_shrink_l2(problem* problem_) {
     double diff, obj;
 
     DenseVector<double> alpha(l, 1.0 / l);
-    DenseVector<double> LB(l, 0.0);
+    DenseVector<double> lower_bound(l, 0.0);
     DenseVector<double> beta(l, -1.0);
     DenseVector<double> w(n, 0);
 
@@ -167,8 +169,6 @@ solution* dcd_svm_no_shrink_l2(problem* problem_) {
 
     iter = 0;
     while (iter < max_iter) {
-        auto start = std::chrono::steady_clock::now();
-
         PGmax_new = 0.0;
 
         for (i = 0; i < l; i++) {
@@ -183,7 +183,7 @@ solution* dcd_svm_no_shrink_l2(problem* problem_) {
             auto& xi = labeled_point_vector[i].x;
 
             G = w.dot(xi) * yi + beta[i] + diag * alpha[i];
-            if (EQUAL_VALUE(alpha[i], LB[i])) {
+            if (EQUAL_VALUE(alpha[i], lower_bound[i])) {
                 PG = std::min(0.0, G);
             } else {
                 PG = G;
@@ -194,7 +194,7 @@ solution* dcd_svm_no_shrink_l2(problem* problem_) {
             } else {
                 optimal = false;
                 double alpha_old = alpha[i];
-                alpha[i] = std::min(std::max(alpha[i] - G / QD[i], LB[i]), UB);
+                alpha[i] = std::min(std::max(alpha[i] - G / QD[i], lower_bound[i]), upper_bound);
                 diff = yi * (alpha[i] - alpha_old);
                 w += xi * diff;
             }
@@ -203,7 +203,6 @@ solution* dcd_svm_no_shrink_l2(problem* problem_) {
             break;
         }
         iter++;
-        auto end = std::chrono::steady_clock::now();
 
         // objective
         obj = 0;
@@ -214,36 +213,41 @@ solution* dcd_svm_no_shrink_l2(problem* problem_) {
             obj += alpha[i] * (alpha[i] * diag + 2 * beta[i]);
         }
         obj /= 2;
+        husky::LOG_I << "[No Shrinking] iteration: " + std::to_string(iter) + ", objective: " + std::to_string(obj);
     }
 
     delete[] index;
     delete[] QD;
 
-    solution* solution_ = new solution;
-    solution_->dual_obj = obj;
-    solution_->alpha = alpha;
-    solution_->w = w;
+    solution* solu = new solution;
+    solu->dual_obj = obj;
+    solu->alpha = alpha;
+    solu->w = w;
 
-    return solution_;
+    clock_t end = clock();
+    husky::LOG_I << "[No Shringking] time elapsed: " + std::to_string((double) (end - start) / CLOCKS_PER_SEC);
+
+    return solu;
 }
 
 template <bool is_sparse = true>
-solution* dcd_svm_shrink_l2(problem* problem_) {
+solution* dcd_svm_shrink_l2(problem* prob) {
+    clock_t start = clock();
     // Declaration and Initialization
-    int l = problem_->l;
-    int n = problem_->n;
-    double C = problem_->C;
+    int l = prob->l;
+    int n = prob->n;
+    double C = prob->C;
 
-    const auto& labeled_point_vector = problem_->train_set->get_data();
+    const auto& labeled_point_vector = prob->train_set->get_data();
 
     double diag = 0.5 / C;
-    double UB = INF;
+    double upper_bound = INF;
 
     double* QD = new double[l];
     int* index = new int[l];
 
     int iter = 0;
-    const int max_iter = problem_->max_iter;
+    const int max_iter = prob->max_iter;
 
     double G, PG, PGmax_new, PGmin_new;
     double PGmax_old = INF;
@@ -255,7 +259,7 @@ solution* dcd_svm_shrink_l2(problem* problem_) {
     double diff, obj;
 
     DenseVector<double> alpha(l, 1.0 / l);
-    DenseVector<double> LB(l, 0.0);
+    DenseVector<double> lower_bound(l, 0.0);
     DenseVector<double> beta(l, -1.0);
     DenseVector<double> w(n, 0);
 
@@ -266,8 +270,6 @@ solution* dcd_svm_shrink_l2(problem* problem_) {
     }
 
     while (iter < max_iter) {
-        auto start = std::chrono::steady_clock::now();
-
         PGmax_new = 0;
         PGmin_new = 0;
 
@@ -284,7 +286,7 @@ solution* dcd_svm_shrink_l2(problem* problem_) {
             G = (w.dot(xi)) * yi + beta[i] + diag * alpha[i];
 
             PG = 0;
-            if (EQUAL_VALUE(alpha[i], LB[i])) {
+            if (EQUAL_VALUE(alpha[i], lower_bound[i])) {
                 if (G > PGmax_old) {
                     active_size--;
                     swap(index[k], index[active_size]);
@@ -304,7 +306,7 @@ solution* dcd_svm_shrink_l2(problem* problem_) {
                 continue;
             } else {
                 double alpha_old = alpha[i];
-                alpha[i] = std::min(std::max(alpha[i] - G / QD[i], LB[i]), UB);
+                alpha[i] = std::min(std::max(alpha[i] - G / QD[i], lower_bound[i]), upper_bound);
                 diff = yi * (alpha[i] - alpha_old);
                 w += xi * diff;
             }
@@ -321,7 +323,6 @@ solution* dcd_svm_shrink_l2(problem* problem_) {
                 continue;
             }
         }
-        auto end = std::chrono::steady_clock::now();
 
         PGmax_old = PGmax_new;
         PGmin_old = PGmin_new;
@@ -341,24 +342,27 @@ solution* dcd_svm_shrink_l2(problem* problem_) {
             obj += alpha[i] * (alpha[i] * diag + 2 * beta[i]);
         }
         obj /= 2;
-        husky::LOG_I << "iteration: " + std::to_string (iter) + ", objective: " + std::to_string(obj);
+        husky::LOG_I << "[With Shringking] iteration: " + std::to_string(iter) + ", objective: " + std::to_string(obj);
     }
 
     delete[] index;
     delete[] QD;
 
-    solution* solution_ = new solution;
-    solution_->dual_obj = obj;
-    solution_->alpha = alpha;
-    solution_->w = w;
+    solution* solu = new solution;
+    solu->dual_obj = obj;
+    solu->alpha = alpha;
+    solu->w = w;
 
-    return solution_;
+    clock_t end = clock();
+    husky::LOG_I << "[With Shringking] time elapsed: " + std::to_string((double) (end - start) / CLOCKS_PER_SEC);
+
+    return solu;
 }
 
-void evaluate(problem* problem_, solution* solution_) {
-    const auto& alpha = solution_->alpha;
-    const auto& w = solution_->w;
-    const auto& test_set_data = problem_->test_set->get_data();
+void evaluate(problem* prob, solution* solu) {
+    const auto& alpha = solu->alpha;
+    const auto& w = solu->w;
+    const auto& test_set_data = prob->test_set->get_data();
 
     double error = 0;
     double indicator;
@@ -369,27 +373,26 @@ void evaluate(problem* problem_, solution* solution_) {
             error += 1;
         }
     }
-    husky::LOG_I << "Classification accuracy on testing set with [C = " + 
-                        std::to_string(problem_->C) + "], " +
-                        "[max_iter = " + std::to_string(problem_->max_iter) + "], " +
-                        "[test set size = " + std::to_string(test_set_data.size()) + "]: " +
-                        std::to_string(1.0 - static_cast<double>(error / test_set_data.size()));  
+    husky::LOG_I << "Classification accuracy on testing set with [C = " + std::to_string(prob->C) + "], " +
+                        "[max_iter = " + std::to_string(prob->max_iter) + "], " + "[test set size = " +
+                        std::to_string(test_set_data.size()) + "]: " +
+                        std::to_string(1.0 - static_cast<double>(error / test_set_data.size()));
 }
 
 void job_runner() {
-    problem* problem_ = new problem;
+    problem* prob = new problem;
 
-    initialize(problem_);
+    initialize(prob);
 
-    // solution* ret1 = dcd_svm_no_shrink_l2(problem_);
-    // evaluate(problem_, ret1);
+    solution* solu_1 = dcd_svm_no_shrink_l2(prob);
+    evaluate(prob, solu_1);
 
-    solution* ret2 = dcd_svm_shrink_l2(problem_);
-    evaluate(problem_, ret2);
+    solution* solu_2 = dcd_svm_shrink_l2(prob);
+    evaluate(prob, solu_2);
 
-    delete problem_;
-    // delete ret1;
-    delete ret2;
+    delete prob;
+    delete solu_1;
+    delete solu_2;
 }
 
 void init() {
@@ -401,7 +404,8 @@ void init() {
 }
 
 int main(int argc, char** argv) {
-    std::vector<std::string> args({"hdfs_namenode", "hdfs_namenode_port", "train", "test", "C", "format", "is_sparse", "max_iter"});
+    std::vector<std::string> args(
+        {"hdfs_namenode", "hdfs_namenode_port", "train", "test", "C", "format", "is_sparse", "max_iter"});
     if (husky::init_with_args(argc, argv, args)) {
         husky::run_job(init);
         return 0;

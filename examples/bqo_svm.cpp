@@ -5,7 +5,7 @@
 
     problem specification:
         f(a) = 0.5* \alpha^TQ\alpha + 0.5/C * \alpha^T\alpha + 1^T\alpha
-        LB[i] <= \alpha[i]
+        lower_bound[i] <= \alpha[i]
 
     Note in this implementation w^T = [w^T b] x_i^T = [x_i^T 1]
 
@@ -59,15 +59,15 @@ using ObjT = husky::lib::ml::LabeledPointHObj<double, double, true>;
 #define EPS 1.0e-6
 
 class problem {
-public:
+   public:
     double C;
-    int n;          // global number of features (appended 1 included)
-    int N;          // global number of samples
+    int n;  // global number of features (appended 1 included)
+    int N;  // global number of samples
     int l;
-    int W;          // number of workers
-    int tid;        // global tid of the worker
-    int idx_l;      // index_low
-    int idx_h;      // index_high
+    int W;      // number of workers
+    int tid;    // global tid of the worker
+    int idx_l;  // index_low
+    int idx_h;  // index_high
     int max_iter;
     int max_inn_iter;
     husky::ObjList<ObjT>* train_set;
@@ -75,7 +75,7 @@ public:
 };
 
 class solution {
-public:
+   public:
     double duality_gap;
     DenseVector<double> w;
     DenseVector<double> alpha;
@@ -97,10 +97,10 @@ T self_dot_product(const husky::lib::Vector<T, is_sparse>& v) {
     return res;
 }
 
-void initialize(problem* problem_) {
+void initialize(problem* prob) {
     // worker info
-    int W = problem_->W = husky::Context::get_num_workers();
-    int tid = problem_->tid = husky::Context::get_global_tid();
+    int W = prob->W = husky::Context::get_num_workers();
+    int tid = prob->tid = husky::Context::get_global_tid();
 
     std::string format_str = husky::Context::get_param("format");
     husky::lib::ml::DataFormat format;
@@ -111,8 +111,8 @@ void initialize(problem* problem_) {
     }
     auto& train_set = husky::ObjListStore::create_objlist<ObjT>("train_set");
     auto& test_set = husky::ObjListStore::create_objlist<ObjT>("test_set");
-    problem_->train_set = &train_set;
-    problem_->test_set = &test_set;
+    prob->train_set = &train_set;
+    prob->test_set = &test_set;
 
     // load data
     int n;
@@ -128,24 +128,23 @@ void initialize(problem* problem_) {
         labeled_point.x.set(n, 1);
     }
     n += 1;
-    problem_->n = n;
+    prob->n = n;
 
     // get model config parameters
-    problem_->C = std::stod(husky::Context::get_param("C"));
-    problem_->max_iter = std::stoi(husky::Context::get_param("max_iter"));
-    problem_->max_inn_iter = std::stoi(husky::Context::get_param("max_inn_iter"));
+    prob->C = std::stod(husky::Context::get_param("C"));
+    prob->max_iter = std::stoi(husky::Context::get_param("max_iter"));
+    prob->max_inn_iter = std::stoi(husky::Context::get_param("max_inn_iter"));
 
     // initialize parameters
     husky::lib::ml::ParameterBucket<double> param_list(n + 1);  // scalar b and vector w
 
     // get the number of global records
-    Aggregator<std::vector<int>> local_samples_agg(
-        std::vector<int>(W, 0),
-        [](std::vector<int>& a, const std::vector<int>& b) {
-            for (int i = 0; i < a.size(); i++)
-                a[i] += b[i];
-        },
-        [W](std::vector<int>& v) { v = std::move(std::vector<int>(W, 0)); });
+    Aggregator<std::vector<int>> local_samples_agg(std::vector<int>(W, 0),
+                                                   [](std::vector<int>& a, const std::vector<int>& b) {
+                                                       for (int i = 0; i < a.size(); i++)
+                                                           a[i] += b[i];
+                                                   },
+                                                   [W](std::vector<int>& v) { v = std::move(std::vector<int>(W, 0)); });
 
     local_samples_agg.update_any([&train_set, tid](std::vector<int>& v) { v[tid] = train_set.get_size(); });
     AggregatorFactory::sync();
@@ -173,10 +172,10 @@ void initialize(problem* problem_) {
     }
     int l = index_high - index_low;
 
-    problem_->N = N;
-    problem_->l = l;
-    problem_->idx_l = index_low;
-    problem_->idx_h = index_high;
+    prob->N = N;
+    prob->l = l;
+    prob->idx_l = index_low;
+    prob->idx_h = index_high;
 
     if (tid == 0) {
         husky::LOG_I << "Number of samples: " + std::to_string(N);
@@ -185,24 +184,26 @@ void initialize(problem* problem_) {
     return;
 }
 
-solution* bqo_svm(problem* problem_) {
+solution* bqo_svm(problem* prob) {
+    clock_t start = clock();
+
     int i, k;
 
-    const auto& train_set = problem_->train_set;
-    const auto& test_set = problem_->test_set;
+    const auto& train_set = prob->train_set;
+    const auto& test_set = prob->test_set;
     const auto& train_set_data = train_set->get_data();
     const auto& test_set_data = test_set->get_data();
 
-    const double C = problem_->C;
-    const int W = problem_->W;
-    const int tid = problem_->tid;
-    const int n = problem_->n;
-    const int l = problem_->l;
-    const int N = problem_->N;
-    const int index_low = problem_->idx_l;
-    const int index_high = problem_->idx_h;
-    const int max_iter = problem_->max_iter;
-    const int max_inn_iter = problem_->max_inn_iter;
+    const double C = prob->C;
+    const int W = prob->W;
+    const int tid = prob->tid;
+    const int n = prob->n;
+    const int l = prob->l;
+    const int N = prob->N;
+    const int index_low = prob->idx_l;
+    const int index_high = prob->idx_h;
+    const int max_iter = prob->max_iter;
+    const int max_inn_iter = prob->max_inn_iter;
 
     int iter_out, inn_iter;
 
@@ -210,11 +211,16 @@ solution* bqo_svm(problem* problem_) {
     double old_primal, primal, obj, grad_alpha_inc;
     double loss, reg = 0;
     double init_primal = C * N;
-    double sum_alpha_inc;
     double w_inc_square;
     double w_dot_w_inc;
+
+    double sum_alpha_inc;
     double alpha_inc_square;
     double alpha_inc_dot_alpha;
+    double sum_alpha_inc_org;
+    double alpha_inc_square_org;
+    double alpha_inc_dot_alpha_org;
+
     double max_step;
     double eta;
 
@@ -228,20 +234,13 @@ solution* bqo_svm(problem* problem_) {
     DenseVector<double> alpha_inc(l);
     DenseVector<double> w(n, 0.0);
     DenseVector<double> w_orig(n, 0.0);
-    DenseVector<double> delta_w(n, 0.0);
+    DenseVector<double> w_inc(n, 0.0);
     DenseVector<double> best_w(n, 0.0);
 
-    husky::lib::ml::ParameterBucket<double> param_server_w;
-    param_server_w.init(n, 0.0);
-
+    // 3 for sum_alpha_inc, alpha_inc_square and alpha_inc_dot_alpha respectively
+    husky::lib::ml::ParameterBucket<double> param_list(n + 3);
     Aggregator<double> loss_agg(0.0, [](double& a, const double& b) { a += b; });
     loss_agg.to_reset_each_iter();
-    Aggregator<double> sum_alpha_inc_agg(0.0, [](double& a, const double& b) { a += b; });
-    sum_alpha_inc_agg.to_reset_each_iter();
-    Aggregator<double> alpha_inc_dot_alpha_agg(0.0, [](double& a, const double& b) { a += b; });
-    alpha_inc_dot_alpha_agg.to_reset_each_iter();
-    Aggregator<double> alpha_inc_square_agg(0.0, [](double& a, const double& b) { a += b; });
-    alpha_inc_square_agg.to_reset_each_iter();
     Aggregator<double> eta_agg(INF, [](double& a, const double& b) { a = std::min(a, b); }, [](double& a) { a = INF; });
     eta_agg.to_reset_each_iter();
 
@@ -264,45 +263,60 @@ solution* bqo_svm(problem* problem_) {
     // and as a result best_w is set to w and will be return, which leads to the classifier giving 0
     // as output, which sits right on the decision boundary.
     // this problem is solved if we set alpha to be non-zero though
-    for (i = 0; i < l; i++) {
-        w += alpha[i] * train_set_data[i].y * train_set_data[i].x;
-    }
-    param_server_w.init(n, 0.0);
-    for (i = 0; i < n; i++) {
-        param_server_w.update(i, w[i]);
-    }
-    AggregatorFactory::sync();
-    w = param_server_w.get_all_param();
-    // set parameter server back to 0.0
-    reg = self_dot_product(w);
-    reg *= 0.5;
-    i = 0;
-    Aggregator<double> et_alpha_agg(0.0, [](double& a, const double& b) { a += b; });
-    et_alpha_agg.to_reset_each_iter();
-    for (auto& labeled_point : train_set_data) {
-        loss = 1 - labeled_point.y * w.dot(labeled_point.x);
-        if (loss > 0) {
-            // l2 loss
-            loss_agg.update(C * loss * loss);
-        }
-        // this is a minomer, actually this calculate both aTa and eTa
-        et_alpha_agg.update(alpha[i] * (alpha[i] * diag - 2));
-        i++;
-    }
-    AggregatorFactory::sync();
-    old_primal += reg + loss_agg.get_value();
-    obj += 0.5 * et_alpha_agg.get_value() + reg;
+    // for (i = 0; i < l; i++) {
+    //     w += alpha[i] * train_set_data[i].y * train_set_data[i].x;
+    // }
+
+    // for (i = 0; i < n; i++) {
+    //     param_list.update(i, w[i]);
+    // }
+    // AggregatorFactory::sync();
+    // const auto& tmp_param_list = param_list.get_all_param();
+    // for (i = 0; i < n; i++) {
+    //     w[i] = tmp_param_list[i];
+    // }
+    
+    // param_list.init(n + 3, 0.0);
+    // // set parameter server back to 0.0
+    // reg = self_dot_product(w);
+    // reg *= 0.5;
+    // i = 0;
+    // Aggregator<double> et_alpha_agg(0.0, [](double& a, const double& b) { a += b; });
+    // et_alpha_agg.to_reset_each_iter();
+    // for (auto& labeled_point : train_set_data) {
+    //     loss = 1 - labeled_point.y * w.dot(labeled_point.x);
+    //     if (loss > 0) {
+    //         // l2 loss
+    //         loss_agg.update(C * loss * loss);
+    //     }
+    //     // this is a minomer, actually this calculate both aTa and eTa
+    //     et_alpha_agg.update(alpha[i] * (alpha[i] * diag - 2));
+    //     i++;
+    // }
+    // AggregatorFactory::sync();
+    // old_primal += reg + loss_agg.get_value();
+    // obj += 0.5 * et_alpha_agg.get_value() + reg;
     /*******************************************************************/
 
     iter_out = 0;
     while (iter_out < max_iter) {
+        if (tid == 0) {
+            husky::LOG_I << "iteration: " + std::to_string(iter_out + 1);
+        }
         // get parameters for local svm solver
         max_step = INF;
         w_orig = w;
         alpha_orig = alpha;
+        if (iter_out == 0) {
+            sum_alpha_inc_org = 0;
+            alpha_inc_square_org = 0;
+            alpha_inc_dot_alpha_org = 0;
+        } else {
+            sum_alpha_inc_org = sum_alpha_inc;
+            alpha_inc_square_org = alpha_inc_square;
+            alpha_inc_dot_alpha_org = alpha_inc_dot_alpha;
+        }
         sum_alpha_inc = 0;
-        w_inc_square = 0;
-        w_dot_w_inc = 0;
         alpha_inc_square = 0;
         alpha_inc_dot_alpha = 0;
 
@@ -314,7 +328,6 @@ solution* bqo_svm(problem* problem_) {
         // run local svm solver to get local delta alpha
         inn_iter = 0;
         while (inn_iter < max_inn_iter) {
-
             for (k = 0; k < l; k++) {
                 i = index[k];
                 double yi = train_set_data[i].y;
@@ -327,7 +340,7 @@ solution* bqo_svm(problem* problem_) {
                     if (G < 0) {
                         PG = G;
                     }
-                } else if (alpha[i] == INF){
+                } else if (alpha[i] == INF) {
                     if (G > 0) {
                         PG = G;
                     }
@@ -345,7 +358,6 @@ solution* bqo_svm(problem* problem_) {
             inn_iter++;
         }
 
-        alpha_inc = alpha - alpha_orig;
         for (i = 0; i < l; i++) {
             alpha_inc[i] = alpha[i] - alpha_orig[i];
             sum_alpha_inc += alpha_inc[i];
@@ -354,28 +366,30 @@ solution* bqo_svm(problem* problem_) {
             if (alpha_inc[i] > 0)
                 max_step = std::min(max_step, INF);
             else if (alpha_inc[i] < 0)
-                max_step = std::min(max_step, - alpha_orig[i] / alpha_inc[i]);
+                max_step = std::min(max_step, -alpha_orig[i] / alpha_inc[i]);
         }
-        sum_alpha_inc_agg.update(sum_alpha_inc);
-        alpha_inc_square_agg.update(alpha_inc_square);
-        alpha_inc_dot_alpha_agg.update(alpha_inc_dot_alpha);
         eta_agg.update(max_step);
 
-        param_server_w.init(n, 0.0);
         for (i = 0; i < n; i++) {
-            param_server_w.update(i, w[i] - w_orig[i]);
+            param_list.update(i, w[i] - w_orig[i] / W);
         }
+        param_list.update(n, sum_alpha_inc - sum_alpha_inc_org / W);
+        param_list.update(n + 1, alpha_inc_square - alpha_inc_square_org / W);
+        param_list.update(n + 2, alpha_inc_dot_alpha - alpha_inc_dot_alpha_org / W);
         AggregatorFactory::sync();
 
-        sum_alpha_inc = sum_alpha_inc_agg.get_value();
-        alpha_inc_square = alpha_inc_square_agg.get_value();
-        alpha_inc_dot_alpha = alpha_inc_dot_alpha_agg.get_value();
+        const auto& tmp_param_list = param_list.get_all_param();
+        for (i = 0; i < n; i++) {
+            w_inc[i] = tmp_param_list[i];
+        }
+        sum_alpha_inc = tmp_param_list[n];
+        alpha_inc_square = tmp_param_list[n + 1];
+        alpha_inc_dot_alpha = tmp_param_list[n + 2];
         max_step = eta_agg.get_value();
-        delta_w = param_server_w.get_all_param();
 
-        w_inc_square += self_dot_product(delta_w);
-        w_dot_w_inc += w_orig.dot(delta_w);
-        param_server_w.init(n, 0.0);
+        w_inc_square += self_dot_product(w_inc);
+        w_dot_w_inc += w_orig.dot(w_inc);
+
         // get step size
         grad_alpha_inc = w_dot_w_inc + alpha_inc_dot_alpha - sum_alpha_inc;
         if (grad_alpha_inc >= 0) {
@@ -384,10 +398,10 @@ solution* bqo_svm(problem* problem_) {
         }
 
         double aQa = alpha_inc_square + w_inc_square;
-        eta = std::min(max_step, -grad_alpha_inc /aQa);
+        eta = std::min(max_step, -grad_alpha_inc / aQa);
 
         alpha = alpha_orig + eta * alpha_inc;
-        w = w_orig + eta * delta_w;
+        w = w_orig + eta * w_inc;
 
         // f(w) + f(a) will cancel out the 0.5\alphaQ\alpha term (old value)
         obj += eta * (0.5 * eta * aQa + grad_alpha_inc);
@@ -405,7 +419,6 @@ solution* bqo_svm(problem* problem_) {
         AggregatorFactory::sync();
 
         primal += reg + loss_agg.get_value();
-
 
         if (primal < old_primal) {
             old_primal = primal;
@@ -430,17 +443,22 @@ solution* bqo_svm(problem* problem_) {
     delete[] QD;
     delete[] index;
 
-    solution* solution_ = new solution;
-    solution_->duality_gap = gap;
-    solution_->alpha = alpha;
-    solution_->w = w;
+    solution* solu = new solution;
+    solu->duality_gap = gap;
+    solu->alpha = alpha;
+    solu->w = w;
 
-    return solution_;
+    clock_t end = clock();
+    if (tid == 0) {
+        husky::LOG_I << "time elapsed: " + std::to_string((double) (end - start) / CLOCKS_PER_SEC);
+    }
+
+    return solu;
 }
 
-void evaluate(problem* problem_, solution* solution_) {
-    const auto& test_set = problem_->test_set;
-    const auto& w = solution_->w;
+void evaluate(problem* prob, solution* solu) {
+    const auto& test_set = prob->test_set;
+    const auto& w = solu->w;
 
     Aggregator<int> error_agg(0, [](int& a, const int& b) { a += b; });
     Aggregator<int> num_test_agg(0, [](int& a, const int& b) { a += b; });
@@ -454,27 +472,26 @@ void evaluate(problem* problem_, solution* solution_) {
         num_test_agg.update(1);
     });
 
-    if (problem_->tid == 0) {
-        husky::LOG_I << "Classification accuracy on testing set with [C = " + 
-                        std::to_string(problem_->C) + "], " +
-                        "[max_iter = " + std::to_string(problem_->max_iter) + "], " +
-                        "[max_inn_iter = " + std::to_string(problem_->max_inn_iter) + "], " +
-                        "[test set size = " + std::to_string(num_test_agg.get_value()) + "]: " +
-                        std::to_string(1.0 - static_cast<double>(error_agg.get_value()) / num_test_agg.get_value());  
+    if (prob->tid == 0) {
+        husky::LOG_I << "Classification accuracy on testing set with [C = " + std::to_string(prob->C) + "], " +
+                            "[max_iter = " + std::to_string(prob->max_iter) + "], " + "[max_inn_iter = " +
+                            std::to_string(prob->max_inn_iter) + "], " + "[test set size = " +
+                            std::to_string(num_test_agg.get_value()) + "]: " +
+                            std::to_string(1.0 - static_cast<double>(error_agg.get_value()) / num_test_agg.get_value());
     }
 }
 
 void job_runner() {
-    problem* problem_ = new problem;
+    problem* prob = new problem;
 
-    initialize(problem_);
+    initialize(prob);
 
-    solution* solution_ = bqo_svm(problem_);
+    solution* solu = bqo_svm(prob);
 
-    evaluate(problem_, solution_);
+    evaluate(prob, solu);
 
-    delete problem_;
-    delete solution_;
+    delete prob;
+    delete solu;
 }
 
 void init() {
